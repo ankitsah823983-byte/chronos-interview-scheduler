@@ -63,7 +63,15 @@ const INITIAL_TASKS = [
   },
 ];
 
-// Convert comma-separated input into an array.
+const DIAGNOSTIC_LABELS = {
+  CANDIDATE_AVAILABILITY: "Candidate availability issue",
+  SKILL_MISMATCH: "Interviewer skill mismatch",
+  INTERVIEWER_AVAILABILITY: "Interviewer availability issue",
+  ROOM_AVAILABILITY: "Room availability issue",
+  SEARCH_LIMIT: "Scheduling search limit reached",
+  SHARED_RESOURCE_CONFLICT: "Shared-resource conflict",
+};
+
 function parseList(value) {
   return value
     .split(",")
@@ -71,7 +79,6 @@ function parseList(value) {
     .filter(Boolean);
 }
 
-// Sort times in chronological order.
 function compareTimes(a, b) {
   return a.localeCompare(b);
 }
@@ -94,8 +101,19 @@ function App() {
 
   const [generatedSchedule, setGeneratedSchedule] = useState([]);
   const [loading, setLoading] = useState(false);
+
   const [apiError, setApiError] = useState("");
   const [apiMessage, setApiMessage] = useState("");
+  const [scheduleFailure, setScheduleFailure] = useState("");
+  const [diagnostics, setDiagnostics] = useState([]);
+
+  function clearFeedback() {
+    setApiError("");
+    setApiMessage("");
+    setScheduleFailure("");
+    setDiagnostics([]);
+    setGeneratedSchedule([]);
+  }
 
   function updateCandidate(id, changes) {
     setCandidates((current) =>
@@ -130,6 +148,8 @@ function App() {
   }
 
   function addCandidate() {
+    clearFeedback();
+
     setCandidates((current) => [
       ...current,
       {
@@ -141,17 +161,20 @@ function App() {
   }
 
   function removeCandidate(id) {
+    clearFeedback();
+
     setCandidates((current) =>
       current.filter((item) => item.id !== id)
     );
 
-    // Remove interview tasks that belong to this candidate.
     setTasks((current) =>
       current.filter((item) => item.candidateId !== id)
     );
   }
 
   function addInterviewer() {
+    clearFeedback();
+
     setInterviewers((current) => [
       ...current,
       {
@@ -165,12 +188,16 @@ function App() {
   }
 
   function removeInterviewer(id) {
+    clearFeedback();
+
     setInterviewers((current) =>
       current.filter((item) => item.id !== id)
     );
   }
 
   function addRoom() {
+    clearFeedback();
+
     setRooms((current) => [
       ...current,
       {
@@ -182,15 +209,18 @@ function App() {
   }
 
   function removeRoom(id) {
+    clearFeedback();
+
     setRooms((current) =>
       current.filter((item) => item.id !== id)
     );
   }
 
   function addTask() {
+    clearFeedback();
+
     if (candidates.length === 0) {
       setApiError("Add a candidate before adding an interview.");
-      setApiMessage("");
       return;
     }
 
@@ -204,21 +234,18 @@ function App() {
         durationSlots: "1",
       },
     ]);
-
-    setApiError("");
-    setApiMessage("");
   }
 
   function removeTask(id) {
+    clearFeedback();
+
     setTasks((current) =>
       current.filter((item) => item.id !== id)
     );
   }
 
   async function handleGenerateSchedule() {
-    setApiError("");
-    setApiMessage("");
-    setGeneratedSchedule([]);
+    clearFeedback();
 
     const timeSlots = parseList(timeSlotsText).sort(compareTimes);
 
@@ -241,7 +268,7 @@ function App() {
 
     if (!validTimeFormat) {
       setApiError(
-        "Enter time slots in HH:00 or HH:30 format, separated by commas. Example: 10:00, 10:30, 11:00."
+        "Use HH:00 or HH:30 time format. Example: 10:00, 10:30, 11:00."
       );
       return;
     }
@@ -258,7 +285,7 @@ function App() {
       )
     ) {
       setApiError(
-        "Every candidate needs a name and at least one available time slot."
+        "Every candidate needs a name and available time slots."
       );
       return;
     }
@@ -272,7 +299,7 @@ function App() {
       )
     ) {
       setApiError(
-        "Every interviewer needs a name, at least one skill and available time slots."
+        "Every interviewer needs a name, skills and availability."
       );
       return;
     }
@@ -286,7 +313,7 @@ function App() {
       )
     ) {
       setApiError(
-        "Interviewer workload limits must be positive whole numbers, or left blank for no limit."
+        "Workload limits must be positive whole numbers, or blank for no limit."
       );
       return;
     }
@@ -315,7 +342,7 @@ function App() {
       )
     ) {
       setApiError(
-        "Every interview needs a valid candidate, round name, required skill and duration."
+        "Every interview needs a valid candidate, round name, required skills and duration."
       );
       return;
     }
@@ -376,22 +403,34 @@ function App() {
 
       const data = await response.json();
 
-      if (!response.ok || !data.success) {
-        throw new Error(
-          data.error ||
-            data.reason ||
-            "Could not generate a valid schedule."
+      if (response.ok && data.success) {
+        setGeneratedSchedule(data.schedule || []);
+        setApiMessage(
+          `Successfully generated ${(data.schedule || []).length} interviews.`
         );
+        return;
       }
 
-      setGeneratedSchedule(data.schedule);
-
-      setApiMessage(
-        `Successfully generated ${data.schedule.length} interviews.`
+      // Scheduling failures are different from connection failures.
+      setScheduleFailure(
+        data.reason || "No complete schedule could be generated."
       );
+
+      setDiagnostics(
+        Array.isArray(data.diagnostics) ? data.diagnostics : []
+      );
+
+      // Show an ordinary API error only when the server did not
+      // provide constraint diagnostics.
+      if (!Array.isArray(data.diagnostics) || data.diagnostics.length === 0) {
+        setApiError(
+          data.error ||
+            "The server could not provide a detailed diagnosis for this request."
+        );
+      }
     } catch (error) {
       setApiError(
-        `${error.message} Check that the backend is running at localhost:5000.`
+        "Could not connect to the Chronos backend. Check that the server is running at localhost:5000."
       );
     } finally {
       setLoading(false);
@@ -522,9 +561,10 @@ function App() {
               will attempt to create a schedule that respects the
               specified constraints.
             </p>
+
             <div className="demo-notice">
-              Demo mode: this version keeps data in browser memory.
-              It does not save records to a database.
+              Demo mode: data stays in browser memory and is not yet
+              saved to a database.
             </div>
           </div>
 
@@ -544,9 +584,10 @@ function App() {
               <input
                 type="text"
                 value={timeSlotsText}
-                onChange={(event) =>
-                  setTimeSlotsText(event.target.value)
-                }
+                onChange={(event) => {
+                  setTimeSlotsText(event.target.value);
+                  clearFeedback();
+                }}
                 placeholder="10:00, 10:30, 11:00, 11:30"
               />
             </label>
@@ -581,11 +622,12 @@ function App() {
                     <span>Name</span>
                     <input
                       value={candidate.name}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateCandidate(candidate.id, {
                           name: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                     />
                   </label>
 
@@ -593,11 +635,12 @@ function App() {
                     <span>Available slots</span>
                     <input
                       value={candidate.availableSlotsText}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateCandidate(candidate.id, {
                           availableSlotsText: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                       placeholder="10:00, 10:30"
                     />
                   </label>
@@ -632,9 +675,7 @@ function App() {
                   <button
                     type="button"
                     className="remove-button"
-                    onClick={() =>
-                      removeInterviewer(interviewer.id)
-                    }
+                    onClick={() => removeInterviewer(interviewer.id)}
                   >
                     Remove
                   </button>
@@ -645,11 +686,12 @@ function App() {
                     <span>Name</span>
                     <input
                       value={interviewer.name}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateInterviewer(interviewer.id, {
                           name: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                     />
                   </label>
 
@@ -657,11 +699,12 @@ function App() {
                     <span>Skills (comma-separated)</span>
                     <input
                       value={interviewer.skillsText}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateInterviewer(interviewer.id, {
                           skillsText: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                       placeholder="DSA, OS, DBMS"
                     />
                   </label>
@@ -670,11 +713,12 @@ function App() {
                     <span>Available slots</span>
                     <input
                       value={interviewer.availableSlotsText}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateInterviewer(interviewer.id, {
                           availableSlotsText: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                       placeholder="10:00, 10:30"
                     />
                   </label>
@@ -685,11 +729,12 @@ function App() {
                       type="number"
                       min="1"
                       value={interviewer.maxInterviewsPerDay}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateInterviewer(interviewer.id, {
                           maxInterviewsPerDay: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                     />
                   </label>
                 </div>
@@ -734,11 +779,12 @@ function App() {
                     <span>Room name</span>
                     <input
                       value={room.name}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateRoom(room.id, {
                           name: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                     />
                   </label>
 
@@ -746,11 +792,12 @@ function App() {
                     <span>Available slots</span>
                     <input
                       value={room.availableSlotsText}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateRoom(room.id, {
                           availableSlotsText: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                       placeholder="10:00, 10:30"
                     />
                   </label>
@@ -796,11 +843,12 @@ function App() {
                     <span>Candidate</span>
                     <select
                       value={task.candidateId}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateTask(task.id, {
                           candidateId: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                     >
                       {candidates.map((candidate) => (
                         <option
@@ -817,11 +865,12 @@ function App() {
                     <span>Round name</span>
                     <input
                       value={task.roundName}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateTask(task.id, {
                           roundName: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                     />
                   </label>
 
@@ -829,11 +878,12 @@ function App() {
                     <span>Required skills</span>
                     <input
                       value={task.requiredSkillsText}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateTask(task.id, {
                           requiredSkillsText: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                       placeholder="DSA, OS"
                     />
                   </label>
@@ -842,11 +892,12 @@ function App() {
                     <span>Duration (30-minute blocks)</span>
                     <select
                       value={task.durationSlots}
-                      onChange={(event) =>
+                      onChange={(event) => {
                         updateTask(task.id, {
                           durationSlots: event.target.value,
-                        })
-                      }
+                        });
+                        clearFeedback();
+                      }}
                     >
                       <option value="1">30 minutes</option>
                       <option value="2">60 minutes</option>
@@ -881,7 +932,7 @@ function App() {
             </button>
 
             <p>
-              The scheduler will attempt to satisfy candidate,
+              The scheduler attempts to satisfy candidate,
               interviewer, skill, room and workload constraints.
             </p>
           </div>
@@ -895,8 +946,44 @@ function App() {
 
           {apiError && (
             <div className="notice-error" role="alert">
-              <strong>Could not generate schedule</strong>
+              <strong>Request could not be completed</strong>
               <p>{apiError}</p>
+            </div>
+          )}
+
+          {scheduleFailure && (
+            <div className="notice-error diagnostic-summary" role="alert">
+              <strong>Why couldn't Chronos create the schedule?</strong>
+              <p>{scheduleFailure}</p>
+
+              {diagnostics.length > 0 && (
+                <div className="diagnostic-list">
+                  {diagnostics.map((diagnostic, index) => (
+                    <article
+                      className="diagnostic-item"
+                      key={`${diagnostic.code}-${diagnostic.taskId || "global"}-${index}`}
+                    >
+                      <span className="diagnostic-code">
+                        {DIAGNOSTIC_LABELS[diagnostic.code] ||
+                          "Scheduling constraint"}
+                      </span>
+
+                      {diagnostic.roundName && (
+                        <h4>{diagnostic.roundName}</h4>
+                      )}
+
+                      <p>{diagnostic.issue}</p>
+
+                      {diagnostic.suggestion && (
+                        <p className="diagnostic-suggestion">
+                          <strong>Suggested fix:</strong>{" "}
+                          {diagnostic.suggestion}
+                        </p>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -907,9 +994,7 @@ function App() {
                   <p className="section-kicker">SCHEDULER OUTPUT</p>
                   <h3>Generated interview schedule</h3>
                 </div>
-                <span>
-                  {generatedSchedule.length} interviews
-                </span>
+                <span>{generatedSchedule.length} interviews</span>
               </div>
 
               <div className="result-grid">
@@ -931,13 +1016,10 @@ function App() {
 
                       <p>
                         Candidate:{" "}
-                        {candidate?.name || item.candidateId}
+                        {candidate?.name || item.candidateName || item.candidateId}
                       </p>
 
-                      <p>
-                        Interviewer: {item.interviewerName}
-                      </p>
-
+                      <p>Interviewer: {item.interviewerName}</p>
                       <p>Room: {item.roomName}</p>
                     </article>
                   );
