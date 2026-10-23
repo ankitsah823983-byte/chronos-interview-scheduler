@@ -1,20 +1,21 @@
 const express = require("express");
 const cors = require("cors");
+
 const { generateSchedule } = require("./scheduler");
+const { persistScheduleRun } = require("./persistence");
 
 const app = express();
 const PORT = 5000;
 
-// Allow our React frontend to communicate with this server.
 app.use(
   cors({
     origin: "http://localhost:5173",
   })
 );
 
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
-// Basic route to check whether the server is running.
+// Basic API route.
 app.get("/", (req, res) => {
   res.json({
     message: "Welcome to Chronos Interview Scheduler API!",
@@ -29,9 +30,10 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Generate an interview schedule.
-app.post("/api/schedule", (req, res) => {
+// Generate a schedule and persist the scheduling run in PostgreSQL.
+app.post("/api/schedule", async (req, res) => {
   const {
+    eventName,
     timeSlots,
     candidates,
     interviewers,
@@ -54,22 +56,52 @@ app.post("/api/schedule", (req, res) => {
     });
   }
 
+  let result;
+
+  // First, generate the schedule using the existing engine.
   try {
-    const result = generateSchedule({
+    result = generateSchedule({
       timeSlots,
       candidates,
       interviewers,
       rooms,
       tasks,
     });
-
-    return res
-      .status(result.success ? 200 : 422)
-      .json(result);
   } catch (error) {
     return res.status(400).json({
       success: false,
       error: error.message || "Invalid scheduling input.",
+    });
+  }
+
+  // Then, save the input and scheduling result transactionally.
+  try {
+    const persistence = await persistScheduleRun({
+      input: {
+        eventName,
+        timeSlots,
+        candidates,
+        interviewers,
+        rooms,
+        tasks,
+      },
+      result,
+    });
+
+    return res
+      .status(result.success ? 200 : 422)
+      .json({
+        ...result,
+        persistence,
+      });
+  } catch (error) {
+    console.error("Failed to save scheduling run:", error);
+
+    return res.status(500).json({
+      success: false,
+      error:
+        "The scheduling result could not be saved to the database. " +
+        "Check the backend logs and database configuration.",
     });
   }
 });
