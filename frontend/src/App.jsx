@@ -70,6 +70,7 @@ const DIAGNOSTIC_LABELS = {
   ROOM_AVAILABILITY: "Room availability issue",
   SEARCH_LIMIT: "Scheduling search limit reached",
   SHARED_RESOURCE_CONFLICT: "Shared-resource conflict",
+  INTERVIEWER_WORKLOAD_LIMIT: "Interviewer workload limit",
 };
 
 function parseList(value) {
