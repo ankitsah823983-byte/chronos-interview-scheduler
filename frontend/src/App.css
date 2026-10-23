@@ -5,11 +5,26 @@
 .site-shell {
   --bg: #101014;
   --panel: #17171d;
+  --panel-light: #1e1e25;
   --gold: #d8b46a;
+  --gold-light: #e9c983;
   --muted: #a5a2a0;
+  --border: #353036;
+
   min-height: 100vh;
   color: #f4f0e8;
   background: var(--bg);
+}
+
+.site-shell button,
+.site-shell input,
+.site-shell select,
+.site-shell textarea {
+  font: inherit;
+}
+
+.site-shell button {
+  -webkit-tap-highlight-color: transparent;
 }
 
 .navbar {
@@ -54,6 +69,7 @@
 
 .nav-links {
   display: flex;
+  flex-wrap: wrap;
   gap: 30px;
 }
 
@@ -73,7 +89,9 @@
   text-decoration: none;
   font-size: 13px;
   font-weight: 600;
-  transition: transform 0.2s, background 0.2s;
+  transition:
+    transform 0.2s ease,
+    background 0.2s ease;
 }
 
 .nav-button {
@@ -171,7 +189,7 @@
 }
 
 .primary-button:hover {
-  background: #e9c983;
+  background: var(--gold-light);
 }
 
 .secondary-button {
@@ -190,7 +208,10 @@
   margin-right: 8px;
 }
 
+/* Decorative schedule preview */
+
 .schedule-card {
+  min-width: 0;
   padding: 25px;
   border-radius: 10px;
   border: 1px solid #3b3530;
@@ -381,11 +402,244 @@
   margin-right: 5px;
 }
 
-/* Generate Schedule button */
+/* Coordinator workspace */
+
+.scheduler-builder {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 76px 28px 90px;
+  border-top: 1px solid #29282d;
+  scroll-margin-top: 20px;
+}
+
+.builder-intro {
+  max-width: 760px;
+  margin-bottom: 34px;
+}
+
+.builder-intro h2 {
+  margin: 14px 0;
+  font-size: clamp(30px, 4vw, 44px);
+  letter-spacing: -1.4px;
+  line-height: 1.15;
+}
+
+.builder-intro > p:not(.section-kicker) {
+  max-width: 690px;
+  color: #b3afb0;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.demo-notice {
+  margin-top: 20px;
+  padding: 13px 16px;
+  border: 1px solid #5d4c30;
+  border-radius: 5px;
+  background: #d8b46a0c;
+  color: #d8c49d;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.builder-card {
+  margin-top: 20px;
+  padding: 25px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.builder-card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.builder-step {
+  flex: 0 0 39px;
+  width: 39px;
+  height: 39px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #685435;
+  border-radius: 6px;
+  color: var(--gold);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.builder-card-heading h3 {
+  margin: 2px 0 6px;
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.builder-card-heading p {
+  margin: 0;
+  color: #a5a2a0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* Dark input fields and dropdowns */
+
+.form-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.form-field > span {
+  color: #d0c9bf;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.form-field input,
+.form-field select,
+.form-field textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 12px 13px;
+  border: 1px solid #48434b;
+  border-radius: 5px;
+  outline: none;
+  background-color: #111116;
+  color: #f4f0e8;
+  font-size: 13px;
+  line-height: 1.5;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.form-field input::placeholder,
+.form-field textarea::placeholder {
+  color: #77727c;
+  opacity: 1;
+}
+
+.form-field input:hover,
+.form-field select:hover,
+.form-field textarea:hover {
+  border-color: #756246;
+}
+
+.form-field input:focus,
+.form-field select:focus,
+.form-field textarea:focus {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 3px #d8b46a1c;
+  background-color: #15141a;
+}
+
+.form-field select {
+  color-scheme: dark;
+  cursor: pointer;
+}
+
+.form-field select option {
+  background: #17171d;
+  color: #f4f0e8;
+}
+
+.form-field input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.form-field input[type="number"]::-webkit-inner-spin-button,
+.form-field input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/* Candidate, interviewer and room cards */
+
+.resource-item {
+  margin-top: 18px;
+  padding: 20px;
+  border: 1px solid #343039;
+  border-radius: 6px;
+  background: #111116;
+}
+
+.resource-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.resource-title > strong {
+  color: #ede6dc;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.add-button,
+.remove-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.add-button {
+  margin-top: 18px;
+  padding: 12px 16px;
+  border: 1px dashed #806a46;
+  background: #d8b46a0a;
+  color: var(--gold);
+}
+
+.add-button:hover {
+  border-color: var(--gold);
+  background: #d8b46a18;
+}
+
+.remove-button {
+  padding: 8px 10px;
+  border: 1px solid #68413f;
+  background: #b95e5810;
+  color: #df9891;
+  flex-shrink: 0;
+}
+
+.remove-button:hover {
+  border-color: #be7168;
+  background: #b95e5820;
+  color: #ffc0b9;
+}
+
+/* Main generate button */
+
+.builder-actions {
+  margin-top: 28px;
+}
+
 .generate-button {
   width: 100%;
-  margin-top: 20px;
-  padding: 14px 16px;
+  padding: 16px 20px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -394,14 +648,16 @@
   border-radius: 5px;
   background: var(--gold);
   color: #17140f;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   cursor: pointer;
-  transition: background 0.2s, transform 0.2s;
+  transition:
+    background 0.2s ease,
+    transform 0.2s ease;
 }
 
 .generate-button:hover:not(:disabled) {
-  background: #e9c983;
+  background: var(--gold-light);
   transform: translateY(-1px);
 }
 
@@ -415,52 +671,120 @@
   cursor: wait;
 }
 
-.api-message,
-.api-error {
-  margin: 14px 0;
-  font-size: 12px;
+.builder-actions > p {
+  margin: 12px 0 0;
+  color: #918b87;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+/* Success and error messages */
+
+.notice-success,
+.notice-error {
+  margin-top: 24px;
+  padding: 18px 20px;
+  border-radius: 6px;
+  font-size: 13px;
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
 
-.api-message {
-  color: #8cbd89;
+.notice-success {
+  border: 1px solid #34543d;
+  background: #50875512;
+  color: #a4d4a8;
 }
 
-.api-error {
-  color: #f08d83;
+.notice-error {
+  border: 1px solid #71413d;
+  background: #a33d3612;
+  color: #f0aaa2;
 }
 
-.generated-results {
-  margin-top: 20px;
-  border-top: 1px solid #383238;
-  padding-top: 12px;
+.notice-success strong,
+.notice-error strong {
+  display: block;
+  font-size: 14px;
 }
 
-.generated-results h3 {
-  font-size: 16px;
-  margin: 4px 0 14px;
+.notice-success p,
+.notice-error p {
+  margin: 5px 0 0;
 }
 
-.generated-item {
-  display: grid;
-  gap: 6px;
-  margin-top: 10px;
-  padding: 13px;
-  border-left: 3px solid var(--gold);
-  border-radius: 2px;
-  background: #ffffff08;
+/* Generated schedule results */
+
+.schedule-results {
+  margin-top: 30px;
+  padding: 25px;
+  border: 1px solid #665332;
+  border-radius: 8px;
+  background:
+    radial-gradient(ellipse at top left, #d8b46a0b, transparent 65%),
+    var(--panel);
+  scroll-margin-top: 20px;
+}
+
+.results-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.results-heading .section-kicker {
+  margin: 0 0 9px;
+}
+
+.results-heading h3 {
+  margin: 0;
+  font-size: clamp(19px, 3vw, 25px);
+}
+
+.results-heading > span {
+  flex-shrink: 0;
+  color: var(--gold);
   font-size: 12px;
 }
 
-.generated-item strong {
-  font-size: 13px;
-  color: #f4f0e8;
+.result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
-.generated-item span {
-  color: #b3afb0;
+.result-card {
+  min-width: 0;
+  padding: 19px;
+  border: 1px solid #3b3530;
+  border-left: 3px solid var(--gold);
+  border-radius: 5px;
+  background: #ffffff05;
+  overflow-wrap: anywhere;
 }
+
+.result-time {
+  color: var(--gold);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.result-card h4 {
+  margin: 13px 0;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.result-card p {
+  margin: 7px 0 0;
+  color: #b3afb0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* Features section */
 
 .principles,
 .workflow {
@@ -539,6 +863,8 @@
   line-height: 1.8;
 }
 
+/* Process workflow */
+
 .workflow {
   border-top: 1px solid #29282d;
 }
@@ -552,6 +878,8 @@
   color: var(--gold);
   font-size: 12px;
 }
+
+/* Footer */
 
 .footer {
   border-top: 1px solid #29282d;
@@ -572,7 +900,8 @@
   letter-spacing: 1px;
 }
 
-/* Responsive layout */
+/* Tablet layout */
+
 @media (max-width: 850px) {
   .hero {
     grid-template-columns: 1fr;
@@ -581,8 +910,8 @@
   }
 
   .schedule-card {
-    max-width: 560px;
     width: 100%;
+    max-width: 560px;
     box-sizing: border-box;
     justify-self: center;
   }
@@ -595,7 +924,14 @@
   .footer {
     flex-wrap: wrap;
   }
+
+  .scheduler-builder {
+    padding-top: 60px;
+    padding-bottom: 65px;
+  }
 }
+
+/* Mobile layout */
 
 @media (max-width: 540px) {
   .navbar {
@@ -607,6 +943,7 @@
     order: 3;
     width: 100%;
     justify-content: center;
+    gap: 22px;
     padding-top: 10px;
   }
 
@@ -617,7 +954,8 @@
 
   .hero,
   .principles,
-  .workflow {
+  .workflow,
+  .scheduler-builder {
     padding-left: 20px;
     padding-right: 20px;
   }
@@ -645,6 +983,42 @@
 
   .timeline-event small {
     font-size: 9px;
+  }
+
+  .builder-card {
+    padding: 17px;
+  }
+
+  .builder-card-heading {
+    gap: 12px;
+  }
+
+  .builder-step {
+    flex-basis: 34px;
+    width: 34px;
+    height: 34px;
+  }
+
+  .builder-card-heading h3 {
+    font-size: 17px;
+  }
+
+  .field-grid,
+  .result-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .resource-item {
+    padding: 15px;
+  }
+
+  .schedule-results {
+    padding: 18px;
+  }
+
+  .results-heading {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .footer {

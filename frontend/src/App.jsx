@@ -1,85 +1,360 @@
 import { useState } from "react";
 import "./App.css";
 
+const INITIAL_TIME_SLOTS = ["10:00", "10:30", "11:00", "11:30"];
+
+const INITIAL_CANDIDATES = [
+  {
+    id: "c1",
+    name: "Candidate A",
+    availableSlotsText: "10:00, 10:30",
+  },
+  {
+    id: "c2",
+    name: "Candidate B",
+    availableSlotsText: "10:00, 10:30, 11:00, 11:30",
+  },
+];
+
+const INITIAL_INTERVIEWERS = [
+  {
+    id: "i1",
+    name: "Interviewer X",
+    skillsText: "DSA",
+    availableSlotsText: "10:00, 10:30, 11:00, 11:30",
+    maxInterviewsPerDay: "2",
+  },
+  {
+    id: "i2",
+    name: "Interviewer Y",
+    skillsText: "OS, DBMS",
+    availableSlotsText: "10:00, 10:30, 11:00, 11:30",
+    maxInterviewsPerDay: "2",
+  },
+];
+
+const INITIAL_ROOMS = [
+  {
+    id: "r1",
+    name: "Room 1",
+    availableSlotsText: "10:00, 10:30, 11:00, 11:30",
+  },
+  {
+    id: "r2",
+    name: "Room 2",
+    availableSlotsText: "10:00, 10:30, 11:00, 11:30",
+  },
+];
+
+const INITIAL_TASKS = [
+  {
+    id: "t1",
+    candidateId: "c1",
+    roundName: "Coding Interview",
+    requiredSkillsText: "DSA",
+    durationSlots: "1",
+  },
+  {
+    id: "t2",
+    candidateId: "c2",
+    roundName: "Technical Interview",
+    requiredSkillsText: "OS",
+    durationSlots: "1",
+  },
+];
+
+// Convert comma-separated input into an array.
+function parseList(value) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+// Sort times in chronological order.
+function compareTimes(a, b) {
+  return a.localeCompare(b);
+}
+
 function App() {
+  const [timeSlotsText, setTimeSlotsText] = useState(
+    INITIAL_TIME_SLOTS.join(", ")
+  );
+
+  const [candidates, setCandidates] = useState(
+    INITIAL_CANDIDATES
+  );
+
+  const [interviewers, setInterviewers] = useState(
+    INITIAL_INTERVIEWERS
+  );
+
+  const [rooms, setRooms] = useState(INITIAL_ROOMS);
+  const [tasks, setTasks] = useState(INITIAL_TASKS);
+
   const [generatedSchedule, setGeneratedSchedule] = useState([]);
   const [loading, setLoading] = useState(false);
   const [apiError, setApiError] = useState("");
   const [apiMessage, setApiMessage] = useState("");
 
+  function updateCandidate(id, changes) {
+    setCandidates((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, ...changes } : item
+      )
+    );
+  }
+
+  function updateInterviewer(id, changes) {
+    setInterviewers((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, ...changes } : item
+      )
+    );
+  }
+
+  function updateRoom(id, changes) {
+    setRooms((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, ...changes } : item
+      )
+    );
+  }
+
+  function updateTask(id, changes) {
+    setTasks((current) =>
+      current.map((item) =>
+        item.id === id ? { ...item, ...changes } : item
+      )
+    );
+  }
+
+  function addCandidate() {
+    setCandidates((current) => [
+      ...current,
+      {
+        id: `c-${Date.now()}`,
+        name: `Candidate ${current.length + 1}`,
+        availableSlotsText: timeSlotsText,
+      },
+    ]);
+  }
+
+  function removeCandidate(id) {
+    setCandidates((current) =>
+      current.filter((item) => item.id !== id)
+    );
+
+    // Remove interview tasks that belong to this candidate.
+    setTasks((current) =>
+      current.filter((item) => item.candidateId !== id)
+    );
+  }
+
+  function addInterviewer() {
+    setInterviewers((current) => [
+      ...current,
+      {
+        id: `i-${Date.now()}`,
+        name: `Interviewer ${current.length + 1}`,
+        skillsText: "DSA",
+        availableSlotsText: timeSlotsText,
+        maxInterviewsPerDay: "2",
+      },
+    ]);
+  }
+
+  function removeInterviewer(id) {
+    setInterviewers((current) =>
+      current.filter((item) => item.id !== id)
+    );
+  }
+
+  function addRoom() {
+    setRooms((current) => [
+      ...current,
+      {
+        id: `r-${Date.now()}`,
+        name: `Room ${current.length + 1}`,
+        availableSlotsText: timeSlotsText,
+      },
+    ]);
+  }
+
+  function removeRoom(id) {
+    setRooms((current) =>
+      current.filter((item) => item.id !== id)
+    );
+  }
+
+  function addTask() {
+    if (candidates.length === 0) {
+      setApiError("Add a candidate before adding an interview.");
+      setApiMessage("");
+      return;
+    }
+
+    setTasks((current) => [
+      ...current,
+      {
+        id: `t-${Date.now()}`,
+        candidateId: candidates[0].id,
+        roundName: "New Interview",
+        requiredSkillsText: "DSA",
+        durationSlots: "1",
+      },
+    ]);
+
+    setApiError("");
+    setApiMessage("");
+  }
+
+  function removeTask(id) {
+    setTasks((current) =>
+      current.filter((item) => item.id !== id)
+    );
+  }
+
   async function handleGenerateSchedule() {
-    setLoading(true);
     setApiError("");
     setApiMessage("");
     setGeneratedSchedule([]);
 
-    // Demo data sent to our backend scheduler.
-    const payload = {
-      timeSlots: ["10:00", "10:30", "11:00", "11:30"],
+    const timeSlots = parseList(timeSlotsText).sort(compareTimes);
 
-      candidates: [
-        {
-          id: "c1",
-          name: "Candidate A",
-          availableSlots: ["10:00", "10:30"],
-        },
-        {
-          id: "c2",
-          name: "Candidate B",
-          availableSlots: [
-            "10:00",
-            "10:30",
-            "11:00",
-            "11:30",
-          ],
-        },
-      ],
+    if (
+      timeSlots.length === 0 ||
+      candidates.length === 0 ||
+      interviewers.length === 0 ||
+      rooms.length === 0 ||
+      tasks.length === 0
+    ) {
+      setApiError(
+        "Add time slots, candidates, interviewers, rooms and interview tasks first."
+      );
+      return;
+    }
 
-      interviewers: [
-        {
-          id: "i1",
-          name: "Interviewer X",
-          skills: ["DSA"],
-          availableSlots: [
-            "10:00",
-            "10:30",
-            "11:00",
-            "11:30",
-          ],
-          maxInterviewsPerDay: 2,
-        },
-      ],
+    const validTimeFormat = timeSlots.every((slot) =>
+      /^([01]\d|2[0-3]):(00|30)$/.test(slot)
+    );
 
-      rooms: [
-        {
-          id: "r1",
-          name: "Room 1",
-          availableSlots: [
-            "10:00",
-            "10:30",
-            "11:00",
-            "11:30",
-          ],
-        },
-      ],
+    if (!validTimeFormat) {
+      setApiError(
+        "Enter time slots in HH:00 or HH:30 format, separated by commas. Example: 10:00, 10:30, 11:00."
+      );
+      return;
+    }
 
-      tasks: [
-        {
-          id: "t1",
-          candidateId: "c1",
-          roundName: "Coding Interview",
-          requiredSkills: ["DSA"],
-          durationSlots: 1,
-        },
-        {
-          id: "t2",
-          candidateId: "c2",
-          roundName: "Coding Interview",
-          requiredSkills: ["DSA"],
-          durationSlots: 1,
-        },
-      ],
-    };
+    if (new Set(timeSlots).size !== timeSlots.length) {
+      setApiError("Remove duplicate time slots.");
+      return;
+    }
+
+    if (
+      candidates.some(
+        (item) =>
+          !item.name.trim() || !item.availableSlotsText.trim()
+      )
+    ) {
+      setApiError(
+        "Every candidate needs a name and at least one available time slot."
+      );
+      return;
+    }
+
+    if (
+      interviewers.some(
+        (item) =>
+          !item.name.trim() ||
+          !item.skillsText.trim() ||
+          !item.availableSlotsText.trim()
+      )
+    ) {
+      setApiError(
+        "Every interviewer needs a name, at least one skill and available time slots."
+      );
+      return;
+    }
+
+    if (
+      interviewers.some(
+        (item) =>
+          item.maxInterviewsPerDay.trim() !== "" &&
+          (!Number.isInteger(Number(item.maxInterviewsPerDay)) ||
+            Number(item.maxInterviewsPerDay) < 1)
+      )
+    ) {
+      setApiError(
+        "Interviewer workload limits must be positive whole numbers, or left blank for no limit."
+      );
+      return;
+    }
+
+    if (
+      rooms.some(
+        (item) =>
+          !item.name.trim() || !item.availableSlotsText.trim()
+      )
+    ) {
+      setApiError(
+        "Every room needs a name and available time slots."
+      );
+      return;
+    }
+
+    if (
+      tasks.some(
+        (item) =>
+          !item.roundName.trim() ||
+          !item.requiredSkillsText.trim() ||
+          !candidates.some(
+            (candidate) => candidate.id === item.candidateId
+          ) ||
+          !["1", "2", "3", "4"].includes(item.durationSlots)
+      )
+    ) {
+      setApiError(
+        "Every interview needs a valid candidate, round name, required skill and duration."
+      );
+      return;
+    }
+
+    const candidateData = candidates.map((item) => ({
+      id: item.id,
+      name: item.name.trim(),
+      availableSlots: parseList(item.availableSlotsText),
+    }));
+
+    const interviewerData = interviewers.map((item) => ({
+      id: item.id,
+      name: item.name.trim(),
+      skills: parseList(item.skillsText),
+      availableSlots: parseList(item.availableSlotsText),
+      ...(item.maxInterviewsPerDay.trim() !== ""
+        ? {
+            maxInterviewsPerDay: Number(
+              item.maxInterviewsPerDay
+            ),
+          }
+        : {}),
+    }));
+
+    const roomData = rooms.map((item) => ({
+      id: item.id,
+      name: item.name.trim(),
+      availableSlots: parseList(item.availableSlotsText),
+    }));
+
+    const taskData = tasks.map((item) => ({
+      id: item.id,
+      candidateId: item.candidateId,
+      roundName: item.roundName.trim(),
+      requiredSkills: parseList(item.requiredSkillsText),
+      durationSlots: Number(item.durationSlots),
+    }));
+
+    setLoading(true);
 
     try {
       const response = await fetch(
@@ -89,7 +364,13 @@ function App() {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            timeSlots,
+            candidates: candidateData,
+            interviewers: interviewerData,
+            rooms: roomData,
+            tasks: taskData,
+          }),
         }
       );
 
@@ -99,7 +380,7 @@ function App() {
         throw new Error(
           data.error ||
             data.reason ||
-            "Unable to generate a schedule."
+            "Could not generate a valid schedule."
         );
       }
 
@@ -110,8 +391,7 @@ function App() {
       );
     } catch (error) {
       setApiError(
-        error.message ||
-          "Could not connect to the Chronos backend."
+        `${error.message} Check that the backend is running at localhost:5000.`
       );
     } finally {
       setLoading(false);
@@ -131,11 +411,12 @@ function App() {
 
         <nav className="nav-links">
           <a href="#features">Features</a>
+          <a href="#scheduler">Scheduler</a>
           <a href="#workflow">How it works</a>
         </nav>
 
-        <a className="nav-button" href="#workflow">
-          Explore platform <span>↗</span>
+        <a className="nav-button" href="#scheduler">
+          Build a schedule <span>↗</span>
         </a>
       </header>
 
@@ -160,8 +441,8 @@ function App() {
             </p>
 
             <div className="hero-actions">
-              <a className="primary-button" href="#workflow">
-                Discover Chronos <span>→</span>
+              <a className="primary-button" href="#scheduler">
+                Build a schedule <span>→</span>
               </a>
 
               <a className="secondary-button" href="#features">
@@ -183,7 +464,7 @@ function App() {
               </div>
 
               <span className="live-badge">
-                <span className="status-dot" /> PREVIEW
+                <span className="status-dot" /> DEMO
               </span>
             </div>
 
@@ -203,49 +484,390 @@ function App() {
             </div>
 
             <div className="preview-heading">
-              <span>INTERVIEW TIMELINE</span>
+              <span>ILLUSTRATIVE TIMELINE</span>
               <span>30 MIN / SLOT</span>
             </div>
 
             <div className="timeline-row">
               <time>10:00</time>
-
               <div className="timeline-event event-gold">
                 <strong>Coding Interview</strong>
                 <small>Candidate A · Room 01</small>
               </div>
-
               <span className="event-check">✓</span>
             </div>
 
             <div className="timeline-row">
               <time>10:30</time>
-
               <div className="timeline-event event-red">
-                <strong>Technical Round</strong>
+                <strong>Technical Interview</strong>
                 <small>Candidate B · Room 02</small>
               </div>
-
-              <span className="event-check">✓</span>
-            </div>
-
-            <div className="timeline-row">
-              <time>11:00</time>
-
-              <div className="timeline-event event-blue">
-                <strong>HR Interview</strong>
-                <small>Candidate C · Room 01</small>
-              </div>
-
               <span className="event-check">✓</span>
             </div>
 
             <p className="preview-caption">
-              <span>✦</span> Illustrative schedule preview
-              — not live interview data
+              <span>✦</span> Illustrative preview only.
+              Your generated schedule appears below the input form.
             </p>
+          </div>
+        </section>
 
-            {/* This button calls the actual backend scheduler. */}
+        <section className="scheduler-builder" id="scheduler">
+          <div className="builder-intro">
+            <p className="section-kicker">COORDINATOR WORKSPACE</p>
+            <h2>Build your interview schedule.</h2>
+            <p>
+              Enter availability, skills and room details. Chronos
+              will attempt to create a schedule that respects the
+              specified constraints.
+            </p>
+            <div className="demo-notice">
+              Demo mode: this version keeps data in browser memory.
+              It does not save records to a database.
+            </div>
+          </div>
+
+          <div className="builder-card">
+            <div className="builder-card-heading">
+              <span className="builder-step">01</span>
+              <div>
+                <h3>Time slots</h3>
+                <p>
+                  Use 30-minute start-time blocks in HH:00 or HH:30 format.
+                </p>
+              </div>
+            </div>
+
+            <label className="form-field">
+              <span>Available start times</span>
+              <input
+                type="text"
+                value={timeSlotsText}
+                onChange={(event) =>
+                  setTimeSlotsText(event.target.value)
+                }
+                placeholder="10:00, 10:30, 11:00, 11:30"
+              />
+            </label>
+          </div>
+
+          <div className="builder-card">
+            <div className="builder-card-heading">
+              <span className="builder-step">02</span>
+              <div>
+                <h3>Candidates</h3>
+                <p>
+                  Enter each candidate's name and available start-time blocks.
+                </p>
+              </div>
+            </div>
+
+            {candidates.map((candidate, index) => (
+              <div className="resource-item" key={candidate.id}>
+                <div className="resource-title">
+                  <strong>Candidate {index + 1}</strong>
+                  <button
+                    type="button"
+                    className="remove-button"
+                    onClick={() => removeCandidate(candidate.id)}
+                  >
+                    Remove
+                  </button>
+                </div>
+
+                <div className="field-grid">
+                  <label className="form-field">
+                    <span>Name</span>
+                    <input
+                      value={candidate.name}
+                      onChange={(event) =>
+                        updateCandidate(candidate.id, {
+                          name: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+
+                  <label className="form-field">
+                    <span>Available slots</span>
+                    <input
+                      value={candidate.availableSlotsText}
+                      onChange={(event) =>
+                        updateCandidate(candidate.id, {
+                          availableSlotsText: event.target.value,
+                        })
+                      }
+                      placeholder="10:00, 10:30"
+                    />
+                  </label>
+                </div>
+              </div>
+            ))}
+
+            <button
+              type="button"
+              className="add-button"
+              onClick={addCandidate}
+            >
+              + Add candidate
+            </button>
+          </div>
+
+          <div className="builder-card">
+            <div className="builder-card-heading">
+              <span className="builder-step">03</span>
+              <div>
+                <h3>Interviewers</h3>
+                <p>
+                  Assign skill tags, availability and daily workload limits.
+                </p>
+              </div>
+            </div>
+
+            {interviewers.map((interviewer, index) => (
+              <div className="resource-item" key={interviewer.id}>
+                <div className="resource-title">
+                  <strong>Interviewer {index + 1}</strong>
+                  <button
+                    type="button"
+                    className="remove-button"
+                    onClick={() =>
+                      removeInterviewer(interviewer.id)
+                    }
+                  >
+                    Remove
+                  </button>
+                </div>
+
+                <div className="field-grid">
+                  <label className="form-field">
+                    <span>Name</span>
+                    <input
+                      value={interviewer.name}
+                      onChange={(event) =>
+                        updateInterviewer(interviewer.id, {
+                          name: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+
+                  <label className="form-field">
+                    <span>Skills (comma-separated)</span>
+                    <input
+                      value={interviewer.skillsText}
+                      onChange={(event) =>
+                        updateInterviewer(interviewer.id, {
+                          skillsText: event.target.value,
+                        })
+                      }
+                      placeholder="DSA, OS, DBMS"
+                    />
+                  </label>
+
+                  <label className="form-field">
+                    <span>Available slots</span>
+                    <input
+                      value={interviewer.availableSlotsText}
+                      onChange={(event) =>
+                        updateInterviewer(interviewer.id, {
+                          availableSlotsText: event.target.value,
+                        })
+                      }
+                      placeholder="10:00, 10:30"
+                    />
+                  </label>
+
+                  <label className="form-field">
+                    <span>Maximum interviews per day</span>
+                    <input
+                      type="number"
+                      min="1"
+                      value={interviewer.maxInterviewsPerDay}
+                      onChange={(event) =>
+                        updateInterviewer(interviewer.id, {
+                          maxInterviewsPerDay: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
+              </div>
+            ))}
+
+            <button
+              type="button"
+              className="add-button"
+              onClick={addInterviewer}
+            >
+              + Add interviewer
+            </button>
+          </div>
+
+          <div className="builder-card">
+            <div className="builder-card-heading">
+              <span className="builder-step">04</span>
+              <div>
+                <h3>Rooms</h3>
+                <p>
+                  Define each room and its available time blocks.
+                </p>
+              </div>
+            </div>
+
+            {rooms.map((room, index) => (
+              <div className="resource-item" key={room.id}>
+                <div className="resource-title">
+                  <strong>Room {index + 1}</strong>
+                  <button
+                    type="button"
+                    className="remove-button"
+                    onClick={() => removeRoom(room.id)}
+                  >
+                    Remove
+                  </button>
+                </div>
+
+                <div className="field-grid">
+                  <label className="form-field">
+                    <span>Room name</span>
+                    <input
+                      value={room.name}
+                      onChange={(event) =>
+                        updateRoom(room.id, {
+                          name: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+
+                  <label className="form-field">
+                    <span>Available slots</span>
+                    <input
+                      value={room.availableSlotsText}
+                      onChange={(event) =>
+                        updateRoom(room.id, {
+                          availableSlotsText: event.target.value,
+                        })
+                      }
+                      placeholder="10:00, 10:30"
+                    />
+                  </label>
+                </div>
+              </div>
+            ))}
+
+            <button
+              type="button"
+              className="add-button"
+              onClick={addRoom}
+            >
+              + Add room
+            </button>
+          </div>
+
+          <div className="builder-card">
+            <div className="builder-card-heading">
+              <span className="builder-step">05</span>
+              <div>
+                <h3>Interview tasks</h3>
+                <p>
+                  Each task represents one candidate's interview in a round.
+                </p>
+              </div>
+            </div>
+
+            {tasks.map((task, index) => (
+              <div className="resource-item" key={task.id}>
+                <div className="resource-title">
+                  <strong>Interview task {index + 1}</strong>
+                  <button
+                    type="button"
+                    className="remove-button"
+                    onClick={() => removeTask(task.id)}
+                  >
+                    Remove
+                  </button>
+                </div>
+
+                <div className="field-grid">
+                  <label className="form-field">
+                    <span>Candidate</span>
+                    <select
+                      value={task.candidateId}
+                      onChange={(event) =>
+                        updateTask(task.id, {
+                          candidateId: event.target.value,
+                        })
+                      }
+                    >
+                      {candidates.map((candidate) => (
+                        <option
+                          key={candidate.id}
+                          value={candidate.id}
+                        >
+                          {candidate.name || candidate.id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="form-field">
+                    <span>Round name</span>
+                    <input
+                      value={task.roundName}
+                      onChange={(event) =>
+                        updateTask(task.id, {
+                          roundName: event.target.value,
+                        })
+                      }
+                    />
+                  </label>
+
+                  <label className="form-field">
+                    <span>Required skills</span>
+                    <input
+                      value={task.requiredSkillsText}
+                      onChange={(event) =>
+                        updateTask(task.id, {
+                          requiredSkillsText: event.target.value,
+                        })
+                      }
+                      placeholder="DSA, OS"
+                    />
+                  </label>
+
+                  <label className="form-field">
+                    <span>Duration (30-minute blocks)</span>
+                    <select
+                      value={task.durationSlots}
+                      onChange={(event) =>
+                        updateTask(task.id, {
+                          durationSlots: event.target.value,
+                        })
+                      }
+                    >
+                      <option value="1">30 minutes</option>
+                      <option value="2">60 minutes</option>
+                      <option value="3">90 minutes</option>
+                      <option value="4">120 minutes</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+            ))}
+
+            <button
+              type="button"
+              className="add-button"
+              onClick={addTask}
+            >
+              + Add interview task
+            </button>
+          </div>
+
+          <div className="builder-actions">
             <button
               type="button"
               className="generate-button"
@@ -254,61 +876,83 @@ function App() {
             >
               {loading
                 ? "Generating schedule..."
-                : "Generate real demo schedule"}
-              <span> →</span>
+                : "Generate interview schedule"}
+              <span>→</span>
             </button>
 
-            {apiMessage && (
-              <p className="api-message" role="status">
-                ✓ {apiMessage}
-              </p>
-            )}
-
-            {apiError && (
-              <p className="api-error" role="alert">
-                {apiError}
-              </p>
-            )}
-
-            {generatedSchedule.length > 0 && (
-              <div className="generated-results">
-                <h3>Generated Schedule</h3>
-
-                {generatedSchedule.map((item) => (
-                  <div
-                    className="generated-item"
-                    key={item.taskId}
-                  >
-                    <strong>{item.roundName}</strong>
-
-                    <span>
-                      Candidate: {item.candidateId}
-                    </span>
-
-                    <span>
-                      {item.startTime} – {item.endTime}
-                    </span>
-
-                    <span>
-                      {item.interviewerName} · {item.roomName}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
+            <p>
+              The scheduler will attempt to satisfy candidate,
+              interviewer, skill, room and workload constraints.
+            </p>
           </div>
+
+          {apiMessage && (
+            <div className="notice-success" role="status">
+              <strong>Schedule generated</strong>
+              <p>{apiMessage}</p>
+            </div>
+          )}
+
+          {apiError && (
+            <div className="notice-error" role="alert">
+              <strong>Could not generate schedule</strong>
+              <p>{apiError}</p>
+            </div>
+          )}
+
+          {generatedSchedule.length > 0 && (
+            <div className="schedule-results">
+              <div className="results-heading">
+                <div>
+                  <p className="section-kicker">SCHEDULER OUTPUT</p>
+                  <h3>Generated interview schedule</h3>
+                </div>
+                <span>
+                  {generatedSchedule.length} interviews
+                </span>
+              </div>
+
+              <div className="result-grid">
+                {generatedSchedule.map((item) => {
+                  const candidate = candidates.find(
+                    (person) => person.id === item.candidateId
+                  );
+
+                  return (
+                    <article
+                      className="result-card"
+                      key={item.taskId}
+                    >
+                      <span className="result-time">
+                        {item.startTime} – {item.endTime}
+                      </span>
+
+                      <h4>{item.roundName}</h4>
+
+                      <p>
+                        Candidate:{" "}
+                        {candidate?.name || item.candidateId}
+                      </p>
+
+                      <p>
+                        Interviewer: {item.interviewerName}
+                      </p>
+
+                      <p>Room: {item.roomName}</p>
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="principles" id="features">
           <div className="section-heading">
-            <p className="section-kicker">
-              THE CHRONOS APPROACH
-            </p>
-
+            <p className="section-kicker">THE CHRONOS APPROACH</p>
             <h2>
               Complex schedules. <span>Clear decisions.</span>
             </h2>
-
             <p>
               Designed around the constraints that make recruitment
               scheduling difficult.
@@ -318,11 +962,8 @@ function App() {
           <div className="feature-grid">
             <article className="feature-card">
               <span className="feature-number">01</span>
-
               <div className="feature-icon">⌘</div>
-
               <h3>Conflict-aware scheduling</h3>
-
               <p>
                 Account for candidate availability, interviewer
                 schedules and room availability when generating plans.
@@ -331,11 +972,8 @@ function App() {
 
             <article className="feature-card">
               <span className="feature-number">02</span>
-
               <div className="feature-icon">◈</div>
-
               <h3>Skill-based matching</h3>
-
               <p>
                 Match interview rounds with interviewers who have
                 the required expertise and available capacity.
@@ -344,11 +982,8 @@ function App() {
 
             <article className="feature-card">
               <span className="feature-number">03</span>
-
               <div className="feature-icon">◎</div>
-
               <h3>One connected workflow</h3>
-
               <p>
                 Give candidates, interviewers and coordinators
                 a shared view of the recruitment schedule.
@@ -358,10 +993,7 @@ function App() {
         </section>
 
         <section className="workflow" id="workflow">
-          <p className="section-kicker">
-            FROM CHAOS TO CLARITY
-          </p>
-
+          <p className="section-kicker">FROM CHAOS TO CLARITY</p>
           <h2>Three steps to a better schedule.</h2>
 
           <div className="workflow-grid">
@@ -369,8 +1001,7 @@ function App() {
               <span>01</span>
               <h3>Set the constraints</h3>
               <p>
-                Collect availability, skills, rooms and interview
-                requirements.
+                Collect availability, skills, rooms and interview requirements.
               </p>
             </div>
 
@@ -378,8 +1009,7 @@ function App() {
               <span>02</span>
               <h3>Generate a plan</h3>
               <p>
-                Find feasible assignments and identify scheduling
-                conflicts.
+                Find feasible assignments and identify scheduling conflicts.
               </p>
             </div>
 
@@ -387,8 +1017,7 @@ function App() {
               <span>03</span>
               <h3>Review and publish</h3>
               <p>
-                Let the coordinator review the draft before
-                publishing it.
+                Let the coordinator review the draft before publishing it.
               </p>
             </div>
           </div>
@@ -398,7 +1027,6 @@ function App() {
       <footer className="footer">
         <a className="brand footer-brand" href="#home">
           <span className="brand-mark">✦</span>
-
           <span>
             <strong>CHRONOS</strong>
             <small>INTERVIEW SCHEDULER</small>
