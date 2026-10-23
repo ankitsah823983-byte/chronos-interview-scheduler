@@ -133,6 +133,7 @@ app.get("/api/schedules/:eventId", async (req, res) => {
 
     const scheduleResult = await pool.query(
       `SELECT
+         si.schedule_id AS "interviewId",
          split_part(si.task_id, ':', 2) AS "taskId",
          split_part(it.candidate_id, ':', 2) AS "candidateId",
          c.full_name AS "candidateName",

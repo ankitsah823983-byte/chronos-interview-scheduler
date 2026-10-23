@@ -426,7 +426,32 @@ function App() {
           localStorage.setItem("chronosLastSavedEventId", eventId);
         }
 
-        setGeneratedSchedule(data.schedule || []);
+                let scheduleToDisplay = data.schedule || [];
+
+        if (eventId) {
+          try {
+            const savedResponse = await fetch(
+              `http://localhost:5000/api/schedules/${encodeURIComponent(eventId)}`
+            );
+
+            const savedData = await savedResponse.json();
+
+            if (
+              savedResponse.ok &&
+              savedData.success &&
+              Array.isArray(savedData.schedule)
+            ) {
+              scheduleToDisplay = savedData.schedule;
+            }
+          } catch (loadError) {
+            console.error(
+              "Could not load saved interview IDs:",
+              loadError
+            );
+          }
+        }
+
+        setGeneratedSchedule(scheduleToDisplay);
         setScheduleViewTitle("Generated interview schedule");
         setApiMessageTitle("Schedule generated and saved");
 
@@ -1133,6 +1158,9 @@ function App() {
                       </span>
 
                       <h4>{item.roundName}</h4>
+                      {item.interviewId && (
+                       <p>Interview ID: {item.interviewId}</p>
+                      )}
 
                       <p>
                         Candidate:{" "}
