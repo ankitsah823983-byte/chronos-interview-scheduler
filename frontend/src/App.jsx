@@ -101,19 +101,33 @@ function App() {
   const [tasks, setTasks] = useState(INITIAL_TASKS);
 
   const [generatedSchedule, setGeneratedSchedule] = useState([]);
+
+  const [savedEventId, setSavedEventId] = useState(
+    () => localStorage.getItem("chronosLastSavedEventId") || ""
+  );
+
   const [loading, setLoading] = useState(false);
+  const [loadingSavedSchedule, setLoadingSavedSchedule] = useState(false);
 
   const [apiError, setApiError] = useState("");
   const [apiMessage, setApiMessage] = useState("");
+  const [apiMessageTitle, setApiMessageTitle] = useState("");
+
+  const [scheduleViewTitle, setScheduleViewTitle] = useState(
+    "Generated interview schedule"
+  );
+
   const [scheduleFailure, setScheduleFailure] = useState("");
   const [diagnostics, setDiagnostics] = useState([]);
 
   function clearFeedback() {
     setApiError("");
     setApiMessage("");
+    setApiMessageTitle("");
     setScheduleFailure("");
     setDiagnostics([]);
     setGeneratedSchedule([]);
+    setScheduleViewTitle("Generated interview schedule");
   }
 
   function updateCandidate(id, changes) {
@@ -405,10 +419,21 @@ function App() {
       const data = await response.json();
 
       if (response.ok && data.success) {
+        const eventId = data.persistence?.eventId || "";
+
+        if (eventId) {
+          setSavedEventId(eventId);
+          localStorage.setItem("chronosLastSavedEventId", eventId);
+        }
+
         setGeneratedSchedule(data.schedule || []);
+        setScheduleViewTitle("Generated interview schedule");
+        setApiMessageTitle("Schedule generated and saved");
+
         setApiMessage(
-          `Successfully generated ${(data.schedule || []).length} interviews.`
+          `Successfully generated ${(data.schedule || []).length} interviews and saved the run to PostgreSQL.`
         );
+
         return;
       }
 
@@ -435,6 +460,65 @@ function App() {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleLoadSavedSchedule() {
+    const eventId = savedEventId.trim();
+
+    if (!eventId) {
+      setApiError("Enter a saved event ID first.");
+      setApiMessage("");
+      setApiMessageTitle("");
+      return;
+    }
+
+    setLoadingSavedSchedule(true);
+    setApiError("");
+    setApiMessage("");
+    setApiMessageTitle("");
+    setScheduleFailure("");
+    setDiagnostics([]);
+    setGeneratedSchedule([]);
+
+    try {
+      const response = await fetch(
+        `http://localhost:5000/api/schedules/${encodeURIComponent(eventId)}`
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        setApiError(data.error || "Could not load the saved schedule.");
+        return;
+      }
+
+      const loadedSchedule = Array.isArray(data.schedule)
+        ? data.schedule
+        : [];
+
+      const loadedEventId = data.event?.eventId || eventId;
+      const eventName = data.event?.eventName || "this event";
+
+      setGeneratedSchedule(loadedSchedule);
+      setScheduleViewTitle("Saved interview schedule");
+      setSavedEventId(loadedEventId);
+
+      localStorage.setItem(
+        "chronosLastSavedEventId",
+        loadedEventId
+      );
+
+      setApiMessageTitle("Saved schedule loaded");
+      setApiMessage(
+        `Loaded ${data.savedInterviews ?? loadedSchedule.length} saved interview(s) from PostgreSQL for ${eventName}.`
+      );
+    } catch (error) {
+      setApiError(
+        "Could not connect to Chronos. Check that the backend is running at localhost:5000."
+      );
+    } finally {
+      setLoadingSavedSchedule(false);
     }
   }
 
@@ -564,8 +648,9 @@ function App() {
             </p>
 
             <div className="demo-notice">
-              Demo mode: data stays in browser memory and is not yet
-              saved to a database.
+              Scheduling runs and generated draft schedules are saved to the
+              local PostgreSQL database. Accounts and multi-device access are
+              not implemented yet.
             </div>
           </div>
 
@@ -924,7 +1009,7 @@ function App() {
               type="button"
               className="generate-button"
               onClick={handleGenerateSchedule}
-              disabled={loading}
+              disabled={loading || loadingSavedSchedule}
             >
               {loading
                 ? "Generating schedule..."
@@ -938,9 +1023,43 @@ function App() {
             </p>
           </div>
 
+          <div className="builder-card saved-schedule-card">
+            <div className="builder-card-heading">
+              <span className="builder-step">06</span>
+              <div>
+                <h3>Saved schedules</h3>
+                <p>
+                  Load a previously saved schedule from PostgreSQL using its event ID.
+                </p>
+              </div>
+            </div>
+
+            <label className="form-field">
+              <span>Saved event ID</span>
+              <input
+                type="text"
+                value={savedEventId}
+                onChange={(event) => setSavedEventId(event.target.value)}
+                placeholder="Paste a saved event ID"
+                autoComplete="off"
+              />
+            </label>
+
+            <button
+              type="button"
+              className="add-button"
+              onClick={handleLoadSavedSchedule}
+              disabled={loading || loadingSavedSchedule}
+            >
+              {loadingSavedSchedule
+                ? "Loading saved schedule..."
+                : "Load saved schedule"}
+            </button>
+          </div>
+
           {apiMessage && (
             <div className="notice-success" role="status">
-              <strong>Schedule generated</strong>
+              <strong>{apiMessageTitle || "Schedule status"}</strong>
               <p>{apiMessage}</p>
             </div>
           )}
@@ -993,7 +1112,7 @@ function App() {
               <div className="results-heading">
                 <div>
                   <p className="section-kicker">SCHEDULER OUTPUT</p>
-                  <h3>Generated interview schedule</h3>
+                  <h3>{scheduleViewTitle}</h3>
                 </div>
                 <span>{generatedSchedule.length} interviews</span>
               </div>
