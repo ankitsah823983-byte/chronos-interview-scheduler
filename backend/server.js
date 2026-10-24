@@ -17,7 +17,6 @@ app.use(
 
 app.use(express.json({ limit: "1mb" }));
 
-// Validate canonical UUIDs before querying UUID database columns.
 function isValidUuid(value) {
   return (
     typeof value === "string" &&
@@ -40,7 +39,7 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Generate a schedule and persist the run transactionally.
+// Generate a schedule and save the run transactionally.
 app.post("/api/schedule", async (req, res) => {
   const {
     eventName,
@@ -70,8 +69,7 @@ app.post("/api/schedule", async (req, res) => {
   if (inputs.some((items) => items.length === 0)) {
     return res.status(400).json({
       success: false,
-      error:
-        "All scheduling input arrays must contain at least one item.",
+      error: "All scheduling input arrays must contain at least one item.",
     });
   }
 
@@ -99,8 +97,7 @@ app.post("/api/schedule", async (req, res) => {
   if (!validEventDate) {
     return res.status(400).json({
       success: false,
-      error:
-        "Event date must be a valid date in YYYY-MM-DD format.",
+      error: "Event date must be a valid date in YYYY-MM-DD format.",
     });
   }
 
@@ -153,7 +150,7 @@ app.post("/api/schedule", async (req, res) => {
   }
 });
 
-// Load an event and its persisted interview assignments.
+// Retrieve a previously saved schedule and event status.
 app.get("/api/schedules/:eventId", async (req, res) => {
   const { eventId } = req.params;
 
@@ -258,8 +255,174 @@ app.get("/api/schedules/:eventId", async (req, res) => {
   }
 });
 
+// Publish a valid draft schedule atomically.
+app.post("/api/events/:eventId/publish", async (req, res) => {
+  const { eventId } = req.params;
+
+  if (!isValidUuid(eventId)) {
+    return res.status(400).json({
+      success: false,
+      error: "Event ID must be a valid UUID.",
+    });
+  }
+
+  let client;
+
+  try {
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    const eventResult = await client.query(
+      `SELECT
+         event_id AS "eventId",
+         event_name AS "eventName",
+         to_char(event_date, 'YYYY-MM-DD') AS "eventDate",
+         status,
+         created_at AS "createdAt"
+       FROM recruitment_events
+       WHERE event_id = $1
+       FOR UPDATE`,
+      [eventId]
+    );
+
+    if (eventResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        success: false,
+        error: "Scheduling event not found.",
+      });
+    }
+
+    const event = eventResult.rows[0];
+
+    // Repeated publication is safe and idempotent.
+    if (event.status === "published") {
+      const countResult = await client.query(
+        `SELECT COUNT(*)::int AS count
+         FROM scheduled_interviews
+         WHERE event_id = $1
+           AND status = 'published'`,
+        [eventId]
+      );
+
+      await client.query("ROLLBACK");
+
+      return res.status(200).json({
+        success: true,
+        alreadyPublished: true,
+        event,
+        publishedInterviews: countResult.rows[0].count,
+      });
+    }
+
+    if (event.status !== "draft") {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        success: false,
+        error: `Cannot publish an event with status '${event.status}'.`,
+      });
+    }
+
+    const readinessResult = await client.query(
+      `SELECT
+         COUNT(*)::int AS total_interviews,
+         COUNT(*) FILTER (
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM scheduled_interview_interviewers sii
+             WHERE sii.event_id = si.event_id
+               AND sii.schedule_id = si.schedule_id
+           )
+         )::int AS interviews_without_interviewers,
+         COUNT(*) FILTER (
+           WHERE si.status <> 'draft'
+         )::int AS interviews_not_draft
+       FROM scheduled_interviews si
+       WHERE si.event_id = $1`,
+      [eventId]
+    );
+
+    const readiness = readinessResult.rows[0];
+
+    if (readiness.total_interviews === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        success: false,
+        error: "Cannot publish an event until at least one interview is saved.",
+      });
+    }
+
+    if (readiness.interviews_without_interviewers > 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        success: false,
+        error: "Every interview must have an assigned interviewer before publishing.",
+      });
+    }
+
+    if (readiness.interviews_not_draft > 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        success: false,
+        error: "All interviews must be in draft status before publishing.",
+      });
+    }
+
+    await client.query(
+      `UPDATE scheduled_interviews
+       SET status = 'published'
+       WHERE event_id = $1
+         AND status = 'draft'`,
+      [eventId]
+    );
+
+    const updatedEventResult = await client.query(
+      `UPDATE recruitment_events
+       SET status = 'published'
+       WHERE event_id = $1
+       RETURNING
+         event_id AS "eventId",
+         event_name AS "eventName",
+         to_char(event_date, 'YYYY-MM-DD') AS "eventDate",
+         status,
+         created_at AS "createdAt"`,
+      [eventId]
+    );
+
+    await client.query("COMMIT");
+
+    return res.status(200).json({
+      success: true,
+      event: updatedEventResult.rows[0],
+      publishedInterviews: readiness.total_interviews,
+    });
+  } catch (error) {
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("Publish transaction rollback failed:", rollbackError);
+      }
+    }
+
+    console.error("Failed to publish event:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: "The event could not be published. Check the backend logs.",
+    });
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+});
+
 app.listen(PORT, () => {
-  console.log(
-    `Chronos API running at http://localhost:${PORT}`
-  );
+  console.log(`Chronos API running at http://localhost:${PORT}`);
 });

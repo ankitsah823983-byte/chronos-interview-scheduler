@@ -108,9 +108,11 @@ function App() {
   const [savedEventId, setSavedEventId] = useState(
     () => localStorage.getItem("chronosLastSavedEventId") || ""
   );
+  const [eventStatus, setEventStatus] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [loadingSavedSchedule, setLoadingSavedSchedule] = useState(false);
+  const [publishingSchedule, setPublishingSchedule] = useState(false);
 
   const [apiError, setApiError] = useState("");
   const [apiMessage, setApiMessage] = useState("");
@@ -453,6 +455,7 @@ function App() {
         }
 
         let scheduleToDisplay = data.schedule || [];
+        setEventStatus("draft");
 
         if (eventId) {
           try {
@@ -468,6 +471,7 @@ function App() {
               Array.isArray(savedData.schedule)
             ) {
               scheduleToDisplay = savedData.schedule;
+              setEventStatus(savedData.event?.status || "draft");
             }
           } catch (loadError) {
             console.error(
@@ -511,6 +515,61 @@ function App() {
       );
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handlePublishSchedule() {
+    const eventId = savedEventId.trim();
+
+    if (!eventId || generatedSchedule.length === 0) {
+      setApiError("Load a saved schedule with interviews before publishing.");
+      return;
+    }
+
+    if (eventStatus !== "draft") {
+      setApiError("Only a draft schedule can be published.");
+      return;
+    }
+
+    setPublishingSchedule(true);
+    setApiError("");
+    setApiMessage("");
+    setApiMessageTitle("");
+
+    try {
+      const response = await fetch(
+        `http://localhost:5000/api/events/${encodeURIComponent(eventId)}/publish`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        setApiError(data.error || "Could not publish this schedule.");
+        return;
+      }
+
+      setEventStatus(data.event?.status || "published");
+      setGeneratedSchedule((current) =>
+        current.map((interview) => ({ ...interview, status: "published" }))
+      );
+      setApiMessageTitle(
+        data.alreadyPublished ? "Schedule already published" : "Schedule published"
+      );
+      setApiMessage(
+        `Published ${data.publishedInterviews ?? generatedSchedule.length} interview(s) for ${data.event?.eventName || eventName}.`
+      );
+    } catch (error) {
+      setApiError(
+        "Could not connect to Chronos. Check that the backend is running at localhost:5000."
+      );
+    } finally {
+      setPublishingSchedule(false);
     }
   }
 
@@ -560,6 +619,7 @@ function App() {
       setSavedEventId(loadedEventId);
       setEventName(loadedEventName);
       setEventDate(loadedEventDate);
+      setEventStatus(data.event?.status || "draft");
 
       localStorage.setItem(
         "chronosLastSavedEventId",
@@ -1201,8 +1261,22 @@ function App() {
                   <p className="section-kicker">SCHEDULER OUTPUT</p>
                   <h3>{scheduleViewTitle}</h3>
                 </div>
-                <span>{generatedSchedule.length} interviews</span>
+                <span>
+                  {generatedSchedule.length} interviews
+                  {eventStatus ? ` · ${eventStatus.toUpperCase()}` : ""}
+                </span>
               </div>
+
+              {eventStatus === "draft" && savedEventId && (
+                <button
+                  type="button"
+                  className="add-button"
+                  onClick={handlePublishSchedule}
+                  disabled={loading || loadingSavedSchedule || publishingSchedule}
+                >
+                  {publishingSchedule ? "Publishing schedule..." : "Publish schedule"}
+                </button>
+              )}
 
               <div className="result-grid">
                 {generatedSchedule.map((item) => {
