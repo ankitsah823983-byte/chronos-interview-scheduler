@@ -85,6 +85,9 @@ function compareTimes(a, b) {
 }
 
 function App() {
+  const [eventName, setEventName] = useState("Chronos Recruitment Event");
+  const [eventDate, setEventDate] = useState("");
+
   const [timeSlotsText, setTimeSlotsText] = useState(
     INITIAL_TIME_SLOTS.join(", ")
   );
@@ -262,6 +265,27 @@ function App() {
   async function handleGenerateSchedule() {
     clearFeedback();
 
+    if (!eventName.trim()) {
+      setApiError("Enter a recruitment event name.");
+      return;
+    }
+
+    const eventDateObject =
+      typeof eventDate === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(eventDate)
+        ? new Date(`${eventDate}T00:00:00.000Z`)
+        : null;
+
+    const validEventDate =
+      eventDateObject !== null &&
+      !Number.isNaN(eventDateObject.getTime()) &&
+      eventDateObject.toISOString().slice(0, 10) === eventDate;
+
+    if (!validEventDate) {
+      setApiError("Choose a valid event date.");
+      return;
+    }
+
     const timeSlots = parseList(timeSlotsText).sort(compareTimes);
 
     if (
@@ -407,6 +431,8 @@ function App() {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
+            eventName: eventName.trim(),
+            eventDate,
             timeSlots,
             candidates: candidateData,
             interviewers: interviewerData,
@@ -426,7 +452,7 @@ function App() {
           localStorage.setItem("chronosLastSavedEventId", eventId);
         }
 
-                let scheduleToDisplay = data.schedule || [];
+        let scheduleToDisplay = data.schedule || [];
 
         if (eventId) {
           try {
@@ -523,11 +549,17 @@ function App() {
         : [];
 
       const loadedEventId = data.event?.eventId || eventId;
-      const eventName = data.event?.eventName || "this event";
+      const loadedEventName =
+        data.event?.eventName || "Chronos Recruitment Event";
+      const loadedEventDate = data.event?.eventDate
+        ? String(data.event.eventDate).slice(0, 10)
+        : "";
 
       setGeneratedSchedule(loadedSchedule);
       setScheduleViewTitle("Saved interview schedule");
       setSavedEventId(loadedEventId);
+      setEventName(loadedEventName);
+      setEventDate(loadedEventDate);
 
       localStorage.setItem(
         "chronosLastSavedEventId",
@@ -536,7 +568,7 @@ function App() {
 
       setApiMessageTitle("Saved schedule loaded");
       setApiMessage(
-        `Loaded ${data.savedInterviews ?? loadedSchedule.length} saved interview(s) from PostgreSQL for ${eventName}.`
+        `Loaded ${data.savedInterviews ?? loadedSchedule.length} saved interview(s) from PostgreSQL for ${loadedEventName}.`
       );
     } catch (error) {
       setApiError(
@@ -683,11 +715,41 @@ function App() {
             <div className="builder-card-heading">
               <span className="builder-step">01</span>
               <div>
-                <h3>Time slots</h3>
+                <h3>Event details &amp; time slots</h3>
                 <p>
-                  Use 30-minute start-time blocks in HH:00 or HH:30 format.
+                  Set the recruitment event name and date, then define
+                  available 30-minute start-time blocks.
                 </p>
               </div>
+            </div>
+
+            <div className="field-grid">
+              <label className="form-field">
+                <span>Recruitment event name</span>
+                <input
+                  type="text"
+                  value={eventName}
+                  onChange={(event) => {
+                    setEventName(event.target.value);
+                    clearFeedback();
+                  }}
+                  placeholder="e.g. Campus Placements 2026"
+                  required
+                />
+              </label>
+
+              <label className="form-field">
+                <span>Event date</span>
+                <input
+                  type="date"
+                  value={eventDate}
+                  onChange={(event) => {
+                    setEventDate(event.target.value);
+                    clearFeedback();
+                  }}
+                  required
+                />
+              </label>
             </div>
 
             <label className="form-field">
@@ -1158,8 +1220,9 @@ function App() {
                       </span>
 
                       <h4>{item.roundName}</h4>
+
                       {item.interviewId && (
-                       <p>Interview ID: {item.interviewId}</p>
+                        <p>Interview ID: {item.interviewId}</p>
                       )}
 
                       <p>

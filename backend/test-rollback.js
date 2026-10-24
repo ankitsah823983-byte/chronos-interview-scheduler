@@ -1,4 +1,3 @@
-
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
 const pool = require("./db");
@@ -10,6 +9,7 @@ async function main() {
 
   const payload = {
     eventName,
+    eventDate: "2026-11-16",
     timeSlots: ["10:00", "10:30"],
 
     candidates: [
@@ -25,8 +25,8 @@ async function main() {
         id: "i1",
         name: "Rollback Interviewer",
 
-        // The null skill deliberately causes a database
-        // NOT NULL constraint violation during persistence.
+        // Deliberately invalid for the database.
+        // This should trigger a persistence failure.
         skills: ["DSA", null],
 
         availableSlots: ["10:00", "10:30"],
@@ -72,8 +72,8 @@ async function main() {
 
   const body = await response.json();
 
-  // The scheduler can generate a schedule, but database
-  // persistence should fail because of the null skill.
+  // Scheduling should succeed, but persistence should fail
+  // when the database rejects the null skill.
   assert.equal(
     response.status,
     500,

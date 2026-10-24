@@ -1,3 +1,4 @@
+
 const pool = require("./db");
 const express = require("express");
 const cors = require("cors");
@@ -35,6 +36,7 @@ app.get("/api/health", (req, res) => {
 app.post("/api/schedule", async (req, res) => {
   const {
     eventName,
+    eventDate,
     timeSlots,
     candidates,
     interviewers,
@@ -50,6 +52,7 @@ app.post("/api/schedule", async (req, res) => {
     tasks,
   ];
 
+  // Validate the structure of the scheduling input.
   if (!inputs.every(Array.isArray)) {
     return res.status(400).json({
       success: false,
@@ -57,16 +60,38 @@ app.post("/api/schedule", async (req, res) => {
     });
   }
 
+  // Reject empty scheduling inputs.
   if (inputs.some((items) => items.length === 0)) {
-  return res.status(400).json({
-    success: false,
-    error: "All scheduling input arrays must contain at least one item.",
-  });
-}
+    return res.status(400).json({
+      success: false,
+      error:
+        "All scheduling input arrays must contain at least one item.",
+    });
+  }
+
+  // Validate the event date strictly as YYYY-MM-DD.
+  const eventDateObject =
+    typeof eventDate === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(eventDate)
+      ? new Date(`${eventDate}T00:00:00.000Z`)
+      : null;
+
+  const validEventDate =
+    eventDateObject !== null &&
+    !Number.isNaN(eventDateObject.getTime()) &&
+    eventDateObject.toISOString().slice(0, 10) === eventDate;
+
+  if (!validEventDate) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Event date must be a valid date in YYYY-MM-DD format.",
+    });
+  }
 
   let result;
 
-  // First, generate the schedule using the existing engine.
+  // Generate the schedule using the existing scheduling engine.
   try {
     result = generateSchedule({
       timeSlots,
@@ -82,11 +107,12 @@ app.post("/api/schedule", async (req, res) => {
     });
   }
 
-  // Then, save the input and scheduling result transactionally.
+  // Persist the input and scheduling result transactionally.
   try {
     const persistence = await persistScheduleRun({
       input: {
         eventName,
+        eventDate,
         timeSlots,
         candidates,
         interviewers,
@@ -123,7 +149,7 @@ app.get("/api/schedules/:eventId", async (req, res) => {
       `SELECT
          event_id AS "eventId",
          event_name AS "eventName",
-         event_date AS "eventDate",
+         to_char(event_date, 'YYYY-MM-DD') AS "eventDate",
          status,
          created_at AS "createdAt"
        FROM recruitment_events

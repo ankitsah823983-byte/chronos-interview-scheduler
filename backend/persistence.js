@@ -20,11 +20,12 @@ async function persistScheduleRun({ input, result }) {
         ? input.eventName.trim()
         : `Chronos scheduling run ${new Date().toISOString()}`;
 
+    // Save the event name and the selected event date.
     await client.query(
       `INSERT INTO recruitment_events
-         (event_id, event_name, status)
-       VALUES ($1, $2, 'draft')`,
-      [eventId, eventName]
+         (event_id, event_name, event_date, status)
+       VALUES ($1, $2, $3, 'draft')`,
+      [eventId, eventName, input.eventDate]
     );
 
     const validSlots = new Set(input.timeSlots);
@@ -43,7 +44,7 @@ async function persistScheduleRun({ input, result }) {
     const roomIds = new Map();
     const taskIds = new Map();
 
-    // Save candidates.
+    // Save candidates and their availability.
     for (const candidate of input.candidates) {
       const id = databaseId(eventId, candidate.id);
       candidateIds.set(candidate.id, id);
@@ -111,7 +112,7 @@ async function persistScheduleRun({ input, result }) {
       }
     }
 
-    // Save rooms and their available slots.
+    // Save rooms and their availability.
     for (const room of input.rooms) {
       const id = databaseId(eventId, room.id);
       roomIds.set(room.id, id);
@@ -135,7 +136,7 @@ async function persistScheduleRun({ input, result }) {
       }
     }
 
-    // Save the interview tasks.
+    // Save interview tasks.
     for (const task of input.tasks) {
       const id = databaseId(eventId, task.id);
       taskIds.set(task.id, id);

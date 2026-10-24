@@ -1,13 +1,14 @@
-
 const assert = require("node:assert/strict");
 
 const BASE_URL = "http://localhost:5000";
+const TEST_EVENT_DATE = "2026-11-15";
 
 function makePayload() {
   const timeSlots = ["10:00", "10:30", "11:00", "11:30"];
 
   return {
     eventName: "Chronos API Test Event",
+    eventDate: TEST_EVENT_DATE,
     timeSlots,
 
     candidates: [
@@ -119,9 +120,11 @@ async function testMissingFields() {
   assert.match(body.error, /fields must be arrays/i);
 }
 
-// Reject empty scheduling arrays
+// 3. Empty scheduling arrays
 async function testEmptySchedulingArrays() {
   const { response, body } = await postSchedule({
+    eventName: "Empty Input Test",
+    eventDate: TEST_EVENT_DATE,
     timeSlots: [],
     candidates: [],
     interviewers: [],
@@ -134,7 +137,7 @@ async function testEmptySchedulingArrays() {
   assert.match(body.error, /must contain at least one item/i);
 }
 
-// 3. Invalid time format
+// 4. Invalid time format
 async function testInvalidTimeFormat() {
   const payload = makePayload();
   payload.timeSlots = ["25:00"];
@@ -146,7 +149,31 @@ async function testInvalidTimeFormat() {
   assert.match(body.error, /HH:MM format/i);
 }
 
-// 4. Impossible schedule returns 422
+// 5. Missing event date
+async function testMissingEventDate() {
+  const payload = makePayload();
+  delete payload.eventDate;
+
+  const { response, body } = await postSchedule(payload);
+
+  assert.equal(response.status, 400);
+  assert.equal(body.success, false);
+  assert.match(body.error, /valid date in YYYY-MM-DD format/i);
+}
+
+// 6. Invalid calendar date
+async function testInvalidEventDate() {
+  const payload = makePayload();
+  payload.eventDate = "2026-02-30";
+
+  const { response, body } = await postSchedule(payload);
+
+  assert.equal(response.status, 400);
+  assert.equal(body.success, false);
+  assert.match(body.error, /valid date in YYYY-MM-DD format/i);
+}
+
+// 7. Impossible schedule returns 422
 async function testInfeasibleSchedule() {
   const payload = makePayload();
 
@@ -181,7 +208,7 @@ async function testInfeasibleSchedule() {
   assert.equal(body.persistence.savedInterviews, 0);
 }
 
-// 5. Retrieve a schedule that was just saved
+// 8. Retrieve the saved schedule, including its date
 async function testRetrieveSavedSchedule() {
   assert.ok(savedEventId, "Successful test must create an event first");
 
@@ -194,6 +221,8 @@ async function testRetrieveSavedSchedule() {
   assert.equal(response.status, 200);
   assert.equal(body.success, true);
   assert.equal(body.event.eventId, savedEventId);
+  assert.equal(body.event.eventName, "Chronos API Test Event");
+  assert.equal(body.event.eventDate, TEST_EVENT_DATE);
   assert.equal(body.schedule.length, 2);
   assert.equal(body.savedInterviews, 2);
 
@@ -206,7 +235,7 @@ async function testRetrieveSavedSchedule() {
   }
 }
 
-// 6. Unknown Event ID returns 404
+// 9. Unknown Event ID returns 404
 async function testUnknownEventId() {
   const unknownEventId = "11111111-1111-4111-8111-111111111111";
 
@@ -235,13 +264,23 @@ async function main() {
   );
 
   await test(
-  "Rejects empty scheduling input arrays",
-  testEmptySchedulingArrays
-);
+    "Rejects empty scheduling input arrays",
+    testEmptySchedulingArrays
+  );
 
   await test(
     "Rejects an invalid time format",
     testInvalidTimeFormat
+  );
+
+  await test(
+    "Rejects a missing event date",
+    testMissingEventDate
+  );
+
+  await test(
+    "Rejects an invalid event date",
+    testInvalidEventDate
   );
 
   await test(
@@ -250,7 +289,7 @@ async function main() {
   );
 
   await test(
-    "Retrieves the saved schedule and individual interview IDs",
+    "Retrieves the saved schedule, date and interview IDs",
     testRetrieveSavedSchedule
   );
 
