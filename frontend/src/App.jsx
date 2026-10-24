@@ -103,8 +103,14 @@ function App() {
     INITIAL_TIME_SLOTS.join(", ")
   );
 
-  const [candidates, setCandidates] = useState(INITIAL_CANDIDATES);
-  const [interviewers, setInterviewers] = useState(INITIAL_INTERVIEWERS);
+  const [candidates, setCandidates] = useState(
+    INITIAL_CANDIDATES
+  );
+
+  const [interviewers, setInterviewers] = useState(
+    INITIAL_INTERVIEWERS
+  );
+
   const [rooms, setRooms] = useState(INITIAL_ROOMS);
   const [tasks, setTasks] = useState(INITIAL_TASKS);
 
@@ -113,13 +119,16 @@ function App() {
   const [savedEventId, setSavedEventId] = useState(
     () => localStorage.getItem("chronosLastSavedEventId") || ""
   );
-
+  // An event only becomes active after it has been explicitly created or loaded.
+  // This prevents a stale localStorage ID from accidentally overwriting a draft.
+  const [activeEventId, setActiveEventId] = useState("");
   const [eventStatus, setEventStatus] = useState("");
   const [savedEvents, setSavedEvents] = useState([]);
   const [loadingEvents, setLoadingEvents] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [loadingSavedSchedule, setLoadingSavedSchedule] = useState(false);
+  const [creatingEvent, setCreatingEvent] = useState(false);
   const [publishingSchedule, setPublishingSchedule] = useState(false);
 
   const [apiError, setApiError] = useState("");
@@ -324,8 +333,142 @@ function App() {
     }
   }
 
+  function handleStartNewEvent() {
+    setActiveEventId("");
+    setSavedEventId("");
+    setEventStatus("");
+    setGeneratedSchedule([]);
+    setScheduleViewTitle("Generated interview schedule");
+    setApiError("");
+    setApiMessageTitle("Ready to create a new draft");
+    setApiMessage("Review the event name and date, then create a new draft event.");
+    setScheduleFailure("");
+    setDiagnostics([]);
+    localStorage.removeItem("chronosLastSavedEventId");
+  }
+
+  async function handleCreateDraftEvent() {
+    if (activeEventId) {
+      setApiError("This event is already active. Use Start a new event before creating another.");
+      return;
+    }
+
+    if (!eventName.trim()) {
+      setApiError("Enter a recruitment event name.");
+      return;
+    }
+
+    const dateObject =
+      typeof eventDate === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(eventDate)
+        ? new Date(`${eventDate}T00:00:00.000Z`)
+        : null;
+
+    const validDate =
+      dateObject !== null &&
+      !Number.isNaN(dateObject.getTime()) &&
+      dateObject.toISOString().slice(0, 10) === eventDate;
+
+    if (!validDate) {
+      setApiError("Choose a valid event date before creating the draft.");
+      return;
+    }
+
+    setCreatingEvent(true);
+    setApiError("");
+    setApiMessage("");
+    setApiMessageTitle("");
+
+    try {
+      const response = await fetch("http://localhost:5000/api/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          eventName: eventName.trim(),
+          eventDate,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success || !data.event?.eventId) {
+        setApiError(data.error || "Could not create the draft event.");
+        return;
+      }
+
+      const createdEvent = data.event;
+      setActiveEventId(createdEvent.eventId);
+      setSavedEventId(createdEvent.eventId);
+      setEventName(createdEvent.eventName);
+      setEventDate(createdEvent.eventDate);
+      setEventStatus(createdEvent.status);
+      setGeneratedSchedule([]);
+      setScheduleViewTitle("Generated interview schedule");
+      localStorage.setItem("chronosLastSavedEventId", createdEvent.eventId);
+      setApiMessageTitle("Draft event created");
+      setApiMessage(
+        `Created ${createdEvent.eventName}. You can now configure its resources and generate a schedule for this event.`
+      );
+      void handleRefreshSavedEvents({ silent: true });
+    } catch (error) {
+      setApiError(
+        "Could not connect to Chronos. Check that the backend is running at localhost:5000."
+      );
+    } finally {
+      setCreatingEvent(false);
+    }
+  }
+
+  function applySavedConfiguration(configuration) {
+    const saved = configuration || {};
+
+    setTimeSlotsText((saved.timeSlots || []).join(", "));
+    setCandidates(
+      (saved.candidates || []).map((candidate) => ({
+        id: candidate.id,
+        name: candidate.name || "",
+        availableSlotsText: (candidate.availableSlots || []).join(", "),
+      }))
+    );
+    setInterviewers(
+      (saved.interviewers || []).map((interviewer) => ({
+        id: interviewer.id,
+        name: interviewer.name || "",
+        skillsText: (interviewer.skills || []).join(", "),
+        availableSlotsText: (interviewer.availableSlots || []).join(", "),
+        maxInterviewsPerDay: String(interviewer.maxInterviewsPerDay ?? 2),
+      }))
+    );
+    setRooms(
+      (saved.rooms || []).map((room) => ({
+        id: room.id,
+        name: room.name || "",
+        availableSlotsText: (room.availableSlots || []).join(", "),
+      }))
+    );
+    setTasks(
+      (saved.tasks || []).map((task) => ({
+        id: task.id,
+        candidateId: task.candidateId,
+        roundName: task.roundName || "",
+        requiredSkillsText: (task.requiredSkills || []).join(", "),
+        durationSlots: String(task.durationSlots ?? 1),
+      }))
+    );
+  }
+
   async function handleGenerateSchedule() {
     clearFeedback();
+
+    if (!activeEventId) {
+      setApiError("Create a draft event or load a saved event before generating a schedule.");
+      return;
+    }
+
+    if (eventStatus === "published") {
+      setApiError("This event is published and cannot be regenerated. Start a new event to make changes.");
+      return;
+    }
 
     if (!eventName.trim()) {
       setApiError("Enter a recruitment event name.");
@@ -461,7 +604,9 @@ function App() {
       availableSlots: parseList(item.availableSlotsText),
       ...(item.maxInterviewsPerDay.trim() !== ""
         ? {
-            maxInterviewsPerDay: Number(item.maxInterviewsPerDay),
+            maxInterviewsPerDay: Number(
+              item.maxInterviewsPerDay
+            ),
           }
         : {}),
     }));
@@ -491,6 +636,7 @@ function App() {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
+            eventId: activeEventId,
             eventName: eventName.trim(),
             eventDate,
             timeSlots,
@@ -505,9 +651,10 @@ function App() {
       const data = await response.json();
 
       if (response.ok && data.success) {
-        const eventId = data.persistence?.eventId || "";
+        const eventId = data.persistence?.eventId || activeEventId;
 
         if (eventId) {
+          setActiveEventId(eventId);
           setSavedEventId(eventId);
           localStorage.setItem("chronosLastSavedEventId", eventId);
           void handleRefreshSavedEvents({ silent: true });
@@ -551,6 +698,25 @@ function App() {
         return;
       }
 
+      // If regeneration failed, reload the previously saved draft rather than
+      // leaving the coordinator with a blank result view.
+      if (activeEventId && response.status === 422) {
+        try {
+          const previousResponse = await fetch(
+            `http://localhost:5000/api/schedules/${encodeURIComponent(activeEventId)}`
+          );
+          const previousData = await previousResponse.json();
+          if (previousResponse.ok && previousData.success) {
+            setGeneratedSchedule(previousData.schedule || []);
+            setEventStatus(previousData.event?.status || "draft");
+            setScheduleViewTitle("Saved interview schedule");
+          }
+        } catch (reloadError) {
+          console.warn("Could not restore the previous draft schedule:", reloadError);
+        }
+      }
+
+      // Scheduling failures are different from connection failures.
       setScheduleFailure(
         data.reason || "No complete schedule could be generated."
       );
@@ -559,6 +725,8 @@ function App() {
         Array.isArray(data.diagnostics) ? data.diagnostics : []
       );
 
+      // Show an ordinary API error only when the server did not
+      // provide constraint diagnostics.
       if (!Array.isArray(data.diagnostics) || data.diagnostics.length === 0) {
         setApiError(
           data.error ||
@@ -611,24 +779,15 @@ function App() {
       }
 
       setEventStatus(data.event?.status || "published");
-
       setGeneratedSchedule((current) =>
-        current.map((interview) => ({
-          ...interview,
-          status: "published",
-        }))
+        current.map((interview) => ({ ...interview, status: "published" }))
       );
-
       setApiMessageTitle(
-        data.alreadyPublished
-          ? "Schedule already published"
-          : "Schedule published"
+        data.alreadyPublished ? "Schedule already published" : "Schedule published"
       );
-
       setApiMessage(
         `Published ${data.publishedInterviews ?? generatedSchedule.length} interview(s) for ${data.event?.eventName || eventName}.`
       );
-
       void handleRefreshSavedEvents({ silent: true });
     } catch (error) {
       setApiError(
@@ -676,14 +835,20 @@ function App() {
       const loadedEventId = data.event?.eventId || eventId;
       const loadedEventName =
         data.event?.eventName || "Chronos Recruitment Event";
-
       const loadedEventDate = data.event?.eventDate
         ? String(data.event.eventDate).slice(0, 10)
         : "";
 
+      if (!data.configuration || !Array.isArray(data.configuration.timeSlots)) {
+        setApiError("The backend did not return the saved event configuration. Restart the updated backend and try again.");
+        return;
+      }
+
+      applySavedConfiguration(data.configuration);
       setGeneratedSchedule(loadedSchedule);
       setScheduleViewTitle("Saved interview schedule");
       setSavedEventId(loadedEventId);
+      setActiveEventId(loadedEventId);
       setEventName(loadedEventName);
       setEventDate(loadedEventDate);
       setEventStatus(data.event?.status || "draft");
@@ -861,6 +1026,7 @@ function App() {
                     clearFeedback();
                   }}
                   placeholder="e.g. Campus Placements 2026"
+                  disabled={Boolean(activeEventId)}
                   required
                 />
               </label>
@@ -874,6 +1040,7 @@ function App() {
                     setEventDate(event.target.value);
                     clearFeedback();
                   }}
+                  disabled={Boolean(activeEventId)}
                   required
                 />
               </label>
@@ -891,6 +1058,24 @@ function App() {
                 placeholder="10:00, 10:30, 11:00, 11:30"
               />
             </label>
+
+            <button
+              type="button"
+              className="add-button"
+              onClick={activeEventId ? handleStartNewEvent : handleCreateDraftEvent}
+              disabled={creatingEvent || loading || loadingSavedSchedule}
+            >
+              {creatingEvent
+                ? "Creating draft event..."
+                : activeEventId
+                  ? "Start a new event"
+                  : "Create draft event"}
+            </button>
+            <p className="field-help">
+              {activeEventId
+                ? `Active event: ${eventName} (${eventStatus || "draft"}). Start a new event to leave this event and create another.`
+                : "Create a draft event first. Then configure resources and generate its schedule."}
+            </p>
           </div>
 
           <div className="builder-card">
@@ -1223,7 +1408,7 @@ function App() {
               type="button"
               className="generate-button"
               onClick={handleGenerateSchedule}
-              disabled={loading || loadingSavedSchedule}
+              disabled={loading || loadingSavedSchedule || creatingEvent || eventStatus === "published"}
             >
               {loading
                 ? "Generating schedule..."
@@ -1251,13 +1436,10 @@ function App() {
             <label className="form-field">
               <span>Select a saved event</span>
               <select
-                value={
-                  savedEvents.some((item) => item.eventId === savedEventId)
-                    ? savedEventId
-                    : ""
-                }
+                value={savedEvents.some((item) => item.eventId === savedEventId) ? savedEventId : ""}
                 onChange={(event) => {
                   setSavedEventId(event.target.value);
+                  setActiveEventId("");
                   setGeneratedSchedule([]);
                   setEventStatus("");
                   setScheduleViewTitle("Generated interview schedule");
@@ -1284,9 +1466,7 @@ function App() {
               onClick={() => handleRefreshSavedEvents()}
               disabled={loadingEvents || loading || loadingSavedSchedule}
             >
-              {loadingEvents
-                ? "Refreshing event list..."
-                : "Refresh saved events"}
+              {loadingEvents ? "Refreshing event list..." : "Refresh saved events"}
             </button>
 
             <label className="form-field">
@@ -1296,6 +1476,7 @@ function App() {
                 value={savedEventId}
                 onChange={(event) => {
                   setSavedEventId(event.target.value);
+                  setActiveEventId("");
                   setGeneratedSchedule([]);
                   setEventStatus("");
                   setScheduleViewTitle("Generated interview schedule");
@@ -1377,7 +1558,6 @@ function App() {
                   <p className="section-kicker">SCHEDULER OUTPUT</p>
                   <h3>{scheduleViewTitle}</h3>
                 </div>
-
                 <span>
                   {generatedSchedule.length} interviews
                   {eventStatus ? ` · ${eventStatus.toUpperCase()}` : ""}
@@ -1389,15 +1569,9 @@ function App() {
                   type="button"
                   className="add-button"
                   onClick={handlePublishSchedule}
-                  disabled={
-                    loading ||
-                    loadingSavedSchedule ||
-                    publishingSchedule
-                  }
+                  disabled={loading || loadingSavedSchedule || publishingSchedule}
                 >
-                  {publishingSchedule
-                    ? "Publishing schedule..."
-                    : "Publish schedule"}
+                  {publishingSchedule ? "Publishing schedule..." : "Publish schedule"}
                 </button>
               )}
 
@@ -1424,9 +1598,7 @@ function App() {
 
                       <p>
                         Candidate:{" "}
-                        {candidate?.name ||
-                          item.candidateName ||
-                          item.candidateId}
+                        {candidate?.name || item.candidateName || item.candidateId}
                       </p>
 
                       <p>Interviewer: {item.interviewerName}</p>

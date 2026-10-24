@@ -1,29 +1,145 @@
-
 const { randomUUID } = require("crypto");
 const pool = require("./db");
 
+function createPersistenceError(message, code) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+async function clearDraftSchedule(client, eventId) {
+  // Delete interview assignments first through the scheduled interview rows.
+  await client.query(
+    `DELETE FROM scheduled_interviews
+     WHERE event_id = $1`,
+    [eventId]
+  );
+
+  // Remove event-specific tasks and resource availability.
+  await client.query(
+    `DELETE FROM interview_tasks
+     WHERE event_id = $1`,
+    [eventId]
+  );
+
+  await client.query(
+    `DELETE FROM candidate_availability
+     WHERE event_id = $1`,
+    [eventId]
+  );
+
+  await client.query(
+    `DELETE FROM interviewer_availability
+     WHERE event_id = $1`,
+    [eventId]
+  );
+
+  await client.query(
+    `DELETE FROM room_availability
+     WHERE event_id = $1`,
+    [eventId]
+  );
+
+  await client.query(
+    `DELETE FROM event_candidates
+     WHERE event_id = $1`,
+    [eventId]
+  );
+
+  await client.query(
+    `DELETE FROM event_interviewers
+     WHERE event_id = $1`,
+    [eventId]
+  );
+
+  await client.query(
+    `DELETE FROM rooms
+     WHERE event_id = $1`,
+    [eventId]
+  );
+
+  await client.query(
+    `DELETE FROM event_time_slots
+     WHERE event_id = $1`,
+    [eventId]
+  );
+}
+
 async function persistScheduleRun({ input, result }) {
-  const eventId = randomUUID();
+  const requestedEventId =
+    typeof input.eventId === "string" && input.eventId.trim()
+      ? input.eventId.trim()
+      : null;
+
+  const reusingEvent = Boolean(requestedEventId);
+  const eventId = requestedEventId || randomUUID();
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
 
-    const eventName =
-      typeof input.eventName === "string" &&
-      input.eventName.trim()
-        ? input.eventName.trim()
-        : `Chronos scheduling run ${new Date().toISOString()}`;
+    if (reusingEvent) {
+      // Lock the event so it cannot be published while this draft is rebuilt.
+      const eventResult = await client.query(
+        `SELECT
+           event_id,
+           status
+         FROM recruitment_events
+         WHERE event_id = $1
+         FOR UPDATE`,
+        [eventId]
+      );
 
-    // 1. Create the recruitment event with its selected date.
-    await client.query(
-      `INSERT INTO recruitment_events
-         (event_id, event_name, event_date, status)
-       VALUES ($1, $2, $3, 'draft')`,
-      [eventId, eventName, input.eventDate]
-    );
+      if (eventResult.rowCount === 0) {
+        throw createPersistenceError(
+          "The selected recruitment event was not found.",
+          "EVENT_NOT_FOUND"
+        );
+      }
 
-    // 2. Save the event's allowed time slots.
+      if (eventResult.rows[0].status !== "draft") {
+        throw createPersistenceError(
+          "Only a draft event can receive a generated schedule.",
+          "EVENT_NOT_DRAFT"
+        );
+      }
+
+      // A failed attempt must not destroy a previously saved draft schedule.
+      if (!result.success) {
+        const countResult = await client.query(
+          `SELECT COUNT(*)::int AS count
+           FROM scheduled_interviews
+           WHERE event_id = $1`,
+          [eventId]
+        );
+
+        await client.query("COMMIT");
+
+        return {
+          eventId,
+          savedInterviews: countResult.rows[0].count,
+          reusedEvent: true,
+          schedulePersisted: false,
+        };
+      }
+
+      // Replace the event's old schedule only when a new complete schedule
+      // has been generated. Everything is inside this transaction.
+      await clearDraftSchedule(client, eventId);
+    } else {
+      const eventName =
+        typeof input.eventName === "string" && input.eventName.trim()
+          ? input.eventName.trim()
+          : `Chronos scheduling run ${new Date().toISOString()}`;
+
+      await client.query(
+        `INSERT INTO recruitment_events
+           (event_id, event_name, event_date, status)
+         VALUES ($1, $2, $3, 'draft')`,
+        [eventId, eventName, input.eventDate]
+      );
+    }
+
     const validSlots = new Set(input.timeSlots);
 
     for (const slot of input.timeSlots) {
@@ -40,17 +156,17 @@ async function persistScheduleRun({ input, result }) {
     const roomIds = new Map();
     const taskIds = new Map();
 
-    // 3. Save candidate profiles, event participation and availability.
+    // Save candidates and their event-specific availability.
     for (const candidate of input.candidates) {
       const name = candidate.name?.trim() || candidate.id;
+
       const email =
         typeof candidate.email === "string" && candidate.email.trim()
           ? candidate.email.trim()
           : null;
 
       const candidateResult = await client.query(
-        `INSERT INTO candidates
-           (candidate_id, full_name, email)
+        `INSERT INTO candidates (candidate_id, full_name, email)
          VALUES ($1, $2, $3)
          ON CONFLICT (email)
          DO UPDATE SET full_name = EXCLUDED.full_name
@@ -81,18 +197,17 @@ async function persistScheduleRun({ input, result }) {
       }
     }
 
-    // 4. Save interviewer profiles, event participation,
-    // skills and event-specific availability/workload.
+    // Save interviewers, skills, event participation and availability.
     for (const interviewer of input.interviewers) {
       const name = interviewer.name?.trim() || interviewer.id;
+
       const email =
         typeof interviewer.email === "string" && interviewer.email.trim()
           ? interviewer.email.trim()
           : null;
 
       const interviewerResult = await client.query(
-        `INSERT INTO interviewers
-           (interviewer_id, full_name, email)
+        `INSERT INTO interviewers (interviewer_id, full_name, email)
          VALUES ($1, $2, $3)
          ON CONFLICT (email)
          DO UPDATE SET full_name = EXCLUDED.full_name
@@ -139,7 +254,7 @@ async function persistScheduleRun({ input, result }) {
       }
     }
 
-    // 5. Save event-owned rooms and their availability.
+    // Save rooms and their event-specific availability.
     for (const room of input.rooms) {
       const roomId = randomUUID();
       roomIds.set(room.id, roomId);
@@ -163,7 +278,7 @@ async function persistScheduleRun({ input, result }) {
       }
     }
 
-    // 6. Save tasks using real database IDs.
+    // Save the event's interview tasks.
     for (const task of input.tasks) {
       const taskId = randomUUID();
       taskIds.set(task.id, taskId);
@@ -192,8 +307,7 @@ async function persistScheduleRun({ input, result }) {
       );
     }
 
-    // 7. Save scheduled interviews only when generation succeeds.
-    // Each interview can have one or more interviewer assignments.
+    // Persist scheduled interviews only when the scheduler succeeded.
     if (result.success) {
       for (const item of result.schedule) {
         const taskId = taskIds.get(item.taskId);
@@ -221,6 +335,7 @@ async function persistScheduleRun({ input, result }) {
 
         const scheduleId = scheduleResult.rows[0].schedule_id;
 
+        // The scheduler currently assigns one interviewer per interview.
         const originalInterviewerIds = Array.isArray(item.interviewerIds)
           ? item.interviewerIds
           : item.interviewerId
@@ -257,6 +372,8 @@ async function persistScheduleRun({ input, result }) {
     return {
       eventId,
       savedInterviews: result.success ? result.schedule.length : 0,
+      reusedEvent: reusingEvent,
+      schedulePersisted: result.success,
     };
   } catch (error) {
     try {

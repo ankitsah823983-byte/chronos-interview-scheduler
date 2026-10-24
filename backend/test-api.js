@@ -11,6 +11,7 @@ function makePayload() {
     eventName: "Chronos API Test Event",
     eventDate: TEST_EVENT_DATE,
     timeSlots,
+
     candidates: [
       {
         id: "c1",
@@ -23,6 +24,7 @@ function makePayload() {
         availableSlots: [...timeSlots],
       },
     ],
+
     interviewers: [
       {
         id: "i1",
@@ -32,6 +34,7 @@ function makePayload() {
         maxInterviewsPerDay: 2,
       },
     ],
+
     rooms: [
       {
         id: "r1",
@@ -39,6 +42,7 @@ function makePayload() {
         availableSlots: [...timeSlots],
       },
     ],
+
     tasks: [
       {
         id: "t1",
@@ -61,6 +65,7 @@ function makePayload() {
 let passed = 0;
 let failed = 0;
 let savedEventId = null;
+let createdDraftEventId = null;
 let infeasibleEventId = null;
 
 async function test(name, callback) {
@@ -126,7 +131,43 @@ async function testSuccessfulGeneration() {
   savedEventId = body.persistence.eventId;
 }
 
-// 2. Reject missing arrays.
+// 2. Create a draft event independently of schedule generation.
+async function testCreateDraftEvent() {
+  const response = await fetch(`${BASE_URL}/api/events`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      eventName: "Chronos Draft Creation Test Event",
+      eventDate: "2026-12-10",
+    }),
+  });
+
+  const body = await response.json();
+
+  assert.equal(response.status, 201, JSON.stringify(body));
+  assert.equal(body.success, true);
+  assert.ok(body.event?.eventId);
+  assert.equal(
+    body.event.eventName,
+    "Chronos Draft Creation Test Event"
+  );
+  assert.equal(body.event.eventDate, "2026-12-10");
+  assert.equal(body.event.status, "draft");
+
+  createdDraftEventId = body.event.eventId;
+
+  const { response: getResponse, body: getBody } =
+    await getSchedule(createdDraftEventId);
+
+  assert.equal(getResponse.status, 200);
+  assert.equal(getBody.event.status, "draft");
+  assert.equal(getBody.savedInterviews, 0);
+  assert.deepEqual(getBody.schedule, []);
+}
+
+// 3. Reject missing scheduling arrays.
 async function testMissingArrays() {
   const { response, body } = await postSchedule({
     timeSlots: [],
@@ -137,7 +178,7 @@ async function testMissingArrays() {
   assert.match(body.error, /fields must be arrays/i);
 }
 
-// 3. Reject empty arrays.
+// 4. Reject empty arrays.
 async function testEmptyArrays() {
   const payload = makePayload();
   payload.tasks = [];
@@ -149,7 +190,7 @@ async function testEmptyArrays() {
   assert.match(body.error, /at least one item/i);
 }
 
-// 4. Reject invalid time format.
+// 5. Reject invalid time format.
 async function testInvalidTime() {
   const payload = makePayload();
   payload.timeSlots = ["25:00"];
@@ -161,7 +202,7 @@ async function testInvalidTime() {
   assert.match(body.error, /HH:MM format/i);
 }
 
-// 5. Reject a missing event date.
+// 6. Reject missing event date when creating a new event.
 async function testMissingEventDate() {
   const payload = makePayload();
   delete payload.eventDate;
@@ -172,7 +213,7 @@ async function testMissingEventDate() {
   assert.match(body.error, /valid date/i);
 }
 
-// 6. Reject an impossible calendar date.
+// 7. Reject an impossible calendar date.
 async function testImpossibleDate() {
   const payload = makePayload();
   payload.eventDate = "2026-02-30";
@@ -183,7 +224,7 @@ async function testImpossibleDate() {
   assert.match(body.error, /valid date/i);
 }
 
-// 7. An infeasible schedule must not be publishable.
+// 8. An infeasible schedule must not be published.
 async function testInfeasibleSchedule() {
   const payload = makePayload();
   payload.timeSlots = ["10:00"];
@@ -218,9 +259,10 @@ async function testInfeasibleSchedule() {
   infeasibleEventId = body.persistence.eventId;
 }
 
-// 8. Event list endpoint returns saved event metadata.
+// 9. Event listing includes metadata and interview counts.
 async function testListSavedEvents() {
-  assert.ok(savedEventId, "A successful schedule must create an event");
+  assert.ok(savedEventId);
+  assert.ok(createdDraftEventId);
 
   const response = await fetch(`${BASE_URL}/api/events`);
   const body = await response.json();
@@ -230,21 +272,94 @@ async function testListSavedEvents() {
   assert.ok(Array.isArray(body.events));
   assert.equal(body.total, body.events.length);
 
-  const event = body.events.find(
+  const scheduledEvent = body.events.find(
     (item) => item.eventId === savedEventId
   );
 
-  assert.ok(event, "The newly saved event should appear in the event list");
-  assert.equal(event.eventName, "Chronos API Test Event");
-  assert.equal(event.eventDate, TEST_EVENT_DATE);
-  assert.equal(event.status, "draft");
-  assert.equal(event.interviewCount, 2);
+  assert.ok(scheduledEvent);
+  assert.equal(scheduledEvent.eventName, "Chronos API Test Event");
+  assert.equal(scheduledEvent.eventDate, TEST_EVENT_DATE);
+  assert.equal(scheduledEvent.status, "draft");
+  assert.equal(scheduledEvent.interviewCount, 2);
+
+  const emptyDraft = body.events.find(
+    (item) => item.eventId === createdDraftEventId
+  );
+
+  assert.ok(emptyDraft);
+  assert.equal(emptyDraft.status, "draft");
+  assert.equal(emptyDraft.interviewCount, 0);
 }
 
-// 9. Retrieve persisted event metadata.
-async function testRetrieveEventMetadata() {
-  assert.ok(savedEventId);
+// 10. Reuse a draft repeatedly without duplicate interviews.
+async function testReuseDraftWithoutDuplicates() {
+  assert.ok(createdDraftEventId);
 
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const payload = {
+      ...makePayload(),
+      eventId: createdDraftEventId,
+    };
+
+    const { response, body } = await postSchedule(payload);
+
+    assert.equal(response.status, 200, JSON.stringify(body));
+    assert.equal(body.success, true);
+    assert.equal(body.persistence.eventId, createdDraftEventId);
+    assert.equal(body.persistence.reusedEvent, true);
+    assert.equal(body.persistence.schedulePersisted, true);
+    assert.equal(body.persistence.savedInterviews, 2);
+  }
+
+  const { response, body } = await getSchedule(createdDraftEventId);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.event.eventId, createdDraftEventId);
+  assert.equal(body.event.status, "draft");
+  assert.equal(body.savedInterviews, 2);
+  assert.equal(body.schedule.length, 2);
+}
+
+// 11. A failed regeneration preserves the previous draft schedule.
+async function testFailedRegenerationPreservesDraft() {
+  const payload = {
+    ...makePayload(),
+    eventId: createdDraftEventId,
+    timeSlots: ["10:00"],
+  };
+
+  for (const candidate of payload.candidates) {
+    candidate.availableSlots = ["10:00"];
+  }
+
+  for (const interviewer of payload.interviewers) {
+    interviewer.availableSlots = ["10:00"];
+  }
+
+  for (const room of payload.rooms) {
+    room.availableSlots = ["10:00"];
+  }
+
+  const { response, body } = await postSchedule(payload);
+
+  assert.equal(response.status, 422);
+  assert.equal(body.success, false);
+  assert.equal(body.persistence.eventId, createdDraftEventId);
+  assert.equal(body.persistence.reusedEvent, true);
+  assert.equal(body.persistence.schedulePersisted, false);
+  assert.equal(body.persistence.savedInterviews, 2);
+
+  const { response: getResponse, body: getBody } =
+    await getSchedule(createdDraftEventId);
+
+  assert.equal(getResponse.status, 200);
+  assert.equal(getBody.event.status, "draft");
+  assert.equal(getBody.savedInterviews, 2);
+  assert.equal(getBody.schedule.length, 2);
+}
+
+// 12. Retrieve saved event metadata.
+async function testRetrieveEventMetadata() {
   const { response, body } = await getSchedule(savedEventId);
 
   assert.equal(response.status, 200);
@@ -256,7 +371,88 @@ async function testRetrieveEventMetadata() {
   assert.equal(body.savedInterviews, 2);
 }
 
-// 10. Retrieve interview details and unique IDs.
+// 13. Retrieve the full configuration used by the scheduler.
+async function testRetrieveEventConfiguration() {
+  const { response, body } = await getSchedule(savedEventId);
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+
+  const configuration = body.configuration;
+
+  assert.ok(configuration, "Expected a configuration object");
+
+  assert.deepEqual(
+    configuration.timeSlots,
+    ["10:00", "10:30", "11:00", "11:30"]
+  );
+
+  assert.equal(configuration.candidates.length, 2);
+
+  const candidateA = configuration.candidates.find(
+    (candidate) => candidate.name === "Candidate A"
+  );
+
+  const candidateB = configuration.candidates.find(
+    (candidate) => candidate.name === "Candidate B"
+  );
+
+  assert.ok(candidateA);
+  assert.ok(candidateB);
+  assert.deepEqual(candidateA.availableSlots, ["10:00", "10:30"]);
+  assert.deepEqual(
+    candidateB.availableSlots,
+    ["10:00", "10:30", "11:00", "11:30"]
+  );
+
+  assert.equal(configuration.interviewers.length, 1);
+
+  const interviewer = configuration.interviewers[0];
+
+  assert.equal(interviewer.name, "Interviewer X");
+  assert.ok(interviewer.skills.includes("DSA"));
+  assert.deepEqual(
+    interviewer.availableSlots,
+    ["10:00", "10:30", "11:00", "11:30"]
+  );
+  assert.equal(interviewer.maxInterviewsPerDay, 2);
+
+  assert.equal(configuration.rooms.length, 1);
+
+  const room = configuration.rooms[0];
+
+  assert.equal(room.name, "Room 1");
+  assert.deepEqual(
+    room.availableSlots,
+    ["10:00", "10:30", "11:00", "11:30"]
+  );
+
+  assert.equal(configuration.tasks.length, 2);
+
+  const codingTask = configuration.tasks.find(
+    (task) => task.roundName === "Coding Interview"
+  );
+
+  const technicalTask = configuration.tasks.find(
+    (task) => task.roundName === "Technical Interview"
+  );
+
+  assert.ok(codingTask);
+  assert.ok(technicalTask);
+  assert.ok(candidateA.id);
+  assert.ok(candidateB.id);
+  assert.ok(codingTask.id);
+  assert.ok(technicalTask.id);
+
+  assert.equal(codingTask.candidateId, candidateA.id);
+  assert.equal(technicalTask.candidateId, candidateB.id);
+  assert.deepEqual(codingTask.requiredSkills, ["DSA"]);
+  assert.equal(codingTask.durationSlots, 1);
+  assert.deepEqual(technicalTask.requiredSkills, ["DSA"]);
+  assert.equal(technicalTask.durationSlots, 1);
+}
+
+// 14. Retrieve interview details and unique IDs.
 async function testRetrieveInterviewDetails() {
   const { response, body } = await getSchedule(savedEventId);
 
@@ -284,7 +480,7 @@ async function testRetrieveInterviewDetails() {
   }
 }
 
-// 11. Unknown schedule returns 404.
+// 15. Unknown schedule returns 404.
 async function testUnknownEvent() {
   const unknownId = "11111111-1111-4111-8111-111111111111";
   const { response, body } = await getSchedule(unknownId);
@@ -293,7 +489,7 @@ async function testUnknownEvent() {
   assert.equal(body.success, false);
 }
 
-// 12. Malformed publish UUID returns 400.
+// 16. Malformed publish UUID returns 400.
 async function testInvalidPublishId() {
   const { response, body } = await postPublish("not-a-uuid");
 
@@ -302,10 +498,8 @@ async function testInvalidPublishId() {
   assert.match(body.error, /valid UUID/i);
 }
 
-// 13. Event without saved interviews cannot be published.
+// 17. Event without interviews cannot be published.
 async function testPublishEmptyEvent() {
-  assert.ok(infeasibleEventId);
-
   const { response, body } = await postPublish(infeasibleEventId);
 
   assert.equal(response.status, 409);
@@ -316,7 +510,7 @@ async function testPublishEmptyEvent() {
   assert.equal(eventBody.event.status, "draft");
 }
 
-// 14. Publish a valid draft schedule.
+// 18. Publish a valid draft schedule.
 async function testPublishValidEvent() {
   const { response, body } = await postPublish(savedEventId);
 
@@ -327,7 +521,7 @@ async function testPublishValidEvent() {
   assert.equal(body.publishedInterviews, 2);
 }
 
-// 15. Published status persists in the database.
+// 19. Published status persists.
 async function testPublishedStatusPersists() {
   const { response, body } = await getSchedule(savedEventId);
 
@@ -340,7 +534,7 @@ async function testPublishedStatusPersists() {
   }
 }
 
-// 16. Repeated publishing is safe.
+// 20. Repeated publishing is safe.
 async function testRepeatedPublish() {
   const { response, body } = await postPublish(savedEventId);
 
@@ -350,7 +544,26 @@ async function testRepeatedPublish() {
   assert.equal(body.publishedInterviews, 2);
 }
 
-// 17. Publishing an unknown event returns 404.
+// 21. Published event cannot be regenerated.
+async function testCannotRegeneratePublishedEvent() {
+  const payload = {
+    ...makePayload(),
+    eventId: savedEventId,
+  };
+
+  const { response, body } = await postSchedule(payload);
+
+  assert.equal(response.status, 409);
+  assert.equal(body.success, false);
+  assert.match(body.error, /draft event/i);
+
+  const { body: getBody } = await getSchedule(savedEventId);
+
+  assert.equal(getBody.event.status, "published");
+  assert.equal(getBody.savedInterviews, 2);
+}
+
+// 22. Publishing an unknown event returns 404.
 async function testPublishUnknownEvent() {
   const unknownId = "22222222-2222-4222-8222-222222222222";
   const { response, body } = await postPublish(unknownId);
@@ -361,17 +574,21 @@ async function testPublishUnknownEvent() {
 }
 
 async function main() {
-  console.log("Chronos API and coordinator workflow tests\n");
+  console.log("Chronos API and event lifecycle tests\n");
 
   await test("Generates and persists a valid draft schedule", testSuccessfulGeneration);
+  await test("Creates an independent draft event", testCreateDraftEvent);
   await test("Rejects missing scheduling arrays", testMissingArrays);
   await test("Rejects empty scheduling arrays", testEmptyArrays);
   await test("Rejects invalid time formatting", testInvalidTime);
   await test("Rejects a missing event date", testMissingEventDate);
   await test("Rejects an impossible calendar date", testImpossibleDate);
   await test("Returns 422 for an infeasible schedule", testInfeasibleSchedule);
-  await test("Lists saved events with their metadata and interview counts", testListSavedEvents);
-  await test("Retrieves persisted event metadata", testRetrieveEventMetadata);
+  await test("Lists saved events and interview counts", testListSavedEvents);
+  await test("Reuses a draft without duplicate interviews", testReuseDraftWithoutDuplicates);
+  await test("Preserves draft interviews when regeneration fails", testFailedRegenerationPreservesDraft);
+  await test("Retrieves saved event metadata", testRetrieveEventMetadata);
+  await test("Retrieves the full event configuration", testRetrieveEventConfiguration);
   await test("Retrieves interview details and unique IDs", testRetrieveInterviewDetails);
   await test("Returns 404 for an unknown event", testUnknownEvent);
   await test("Rejects an invalid publish UUID", testInvalidPublishId);
@@ -379,6 +596,7 @@ async function main() {
   await test("Publishes a valid draft schedule", testPublishValidEvent);
   await test("Persists published event and interview statuses", testPublishedStatusPersists);
   await test("Handles repeated publish requests safely", testRepeatedPublish);
+  await test("Rejects regeneration of a published event", testCannotRegeneratePublishedEvent);
   await test("Returns 404 when publishing an unknown event", testPublishUnknownEvent);
 
   console.log(`\nTest summary: ${passed} passed, ${failed} failed.`);

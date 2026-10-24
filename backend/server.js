@@ -1,3 +1,4 @@
+
 const express = require("express");
 const cors = require("cors");
 
@@ -25,6 +26,22 @@ function isValidUuid(value) {
   );
 }
 
+function isValidDateString(value) {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(value)
+  ) {
+    return false;
+  }
+
+  const dateObject = new Date(`${value}T00:00:00.000Z`);
+
+  return (
+    !Number.isNaN(dateObject.getTime()) &&
+    dateObject.toISOString().slice(0, 10) === value
+  );
+}
+
 app.get("/", (req, res) => {
   res.json({
     message: "Welcome to Chronos Interview Scheduler API!",
@@ -38,7 +55,56 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// List saved events for the coordinator workspace.
+// Create a draft recruitment event independently of schedule generation.
+app.post("/api/events", async (req, res) => {
+  const { eventName, eventDate } = req.body || {};
+
+  if (
+    typeof eventName !== "string" ||
+    eventName.trim().length === 0
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: "Event name is required.",
+    });
+  }
+
+  if (!isValidDateString(eventDate)) {
+    return res.status(400).json({
+      success: false,
+      error: "Event date must be a valid date in YYYY-MM-DD format.",
+    });
+  }
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO recruitment_events
+         (event_name, event_date, status)
+       VALUES ($1, $2, 'draft')
+       RETURNING
+         event_id AS "eventId",
+         event_name AS "eventName",
+         to_char(event_date, 'YYYY-MM-DD') AS "eventDate",
+         status,
+         created_at AS "createdAt"`,
+      [eventName.trim(), eventDate]
+    );
+
+    return res.status(201).json({
+      success: true,
+      event: result.rows[0],
+    });
+  } catch (error) {
+    console.error("Failed to create recruitment event:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: "Could not create the recruitment event.",
+    });
+  }
+});
+
+// List events for the coordinator workspace.
 app.get("/api/events", async (req, res) => {
   try {
     const result = await pool.query(
@@ -76,9 +142,10 @@ app.get("/api/events", async (req, res) => {
   }
 });
 
-// Generate a schedule and save the run transactionally.
+// Generate a schedule. An optional eventId reuses an existing draft.
 app.post("/api/schedule", async (req, res) => {
   const {
+    eventId,
     eventName,
     eventDate,
     timeSlots,
@@ -110,32 +177,35 @@ app.post("/api/schedule", async (req, res) => {
     });
   }
 
-  if (
-    typeof eventName !== "string" ||
-    eventName.trim().length === 0
-  ) {
+  const reuseExistingEvent =
+    eventId !== undefined &&
+    eventId !== null &&
+    eventId !== "";
+
+  if (reuseExistingEvent && !isValidUuid(eventId)) {
     return res.status(400).json({
       success: false,
-      error: "Event name is required.",
+      error: "Event ID must be a valid UUID.",
     });
   }
 
-  const dateObject =
-    typeof eventDate === "string" &&
-    /^\d{4}-\d{2}-\d{2}$/.test(eventDate)
-      ? new Date(`${eventDate}T00:00:00.000Z`)
-      : null;
+  if (!reuseExistingEvent) {
+    if (
+      typeof eventName !== "string" ||
+      eventName.trim().length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Event name is required.",
+      });
+    }
 
-  const validEventDate =
-    dateObject !== null &&
-    !Number.isNaN(dateObject.getTime()) &&
-    dateObject.toISOString().slice(0, 10) === eventDate;
-
-  if (!validEventDate) {
-    return res.status(400).json({
-      success: false,
-      error: "Event date must be a valid date in YYYY-MM-DD format.",
-    });
+    if (!isValidDateString(eventDate)) {
+      return res.status(400).json({
+        success: false,
+        error: "Event date must be a valid date in YYYY-MM-DD format.",
+      });
+    }
   }
 
   let result;
@@ -158,7 +228,9 @@ app.post("/api/schedule", async (req, res) => {
   try {
     const persistence = await persistScheduleRun({
       input: {
-        eventName: eventName.trim(),
+        eventId: reuseExistingEvent ? eventId : undefined,
+        eventName:
+          typeof eventName === "string" ? eventName.trim() : undefined,
         eventDate,
         timeSlots,
         candidates,
@@ -176,6 +248,20 @@ app.post("/api/schedule", async (req, res) => {
         persistence,
       });
   } catch (error) {
+    if (error.code === "EVENT_NOT_FOUND") {
+      return res.status(404).json({
+        success: false,
+        error: error.message,
+      });
+    }
+
+    if (error.code === "EVENT_NOT_DRAFT") {
+      return res.status(409).json({
+        success: false,
+        error: error.message,
+      });
+    }
+
     console.error("Failed to save scheduling run:", error);
 
     return res.status(500).json({
@@ -187,7 +273,7 @@ app.post("/api/schedule", async (req, res) => {
   }
 });
 
-// Retrieve a previously saved schedule and event status.
+// Retrieve an event, its saved interviews, and its full configuration.
 app.get("/api/schedules/:eventId", async (req, res) => {
   const { eventId } = req.params;
 
@@ -218,76 +304,192 @@ app.get("/api/schedules/:eventId", async (req, res) => {
       });
     }
 
-    const scheduleResult = await pool.query(
-      `SELECT
-         si.schedule_id AS "interviewId",
-         it.task_id AS "taskId",
-         it.candidate_id AS "candidateId",
-         c.full_name AS "candidateName",
-         it.round_name AS "roundName",
-         COALESCE(
-           string_agg(
-             DISTINCT i.full_name,
-             ', ' ORDER BY i.full_name
-           ),
-           ''
-         ) AS "interviewerName",
-         COALESCE(
-           array_agg(
-             DISTINCT sii.interviewer_id::text
-             ORDER BY sii.interviewer_id::text
-           ) FILTER (
-             WHERE sii.interviewer_id IS NOT NULL
-           ),
-           ARRAY[]::text[]
-         ) AS "interviewerIds",
-         si.room_id AS "roomId",
-         r.room_name AS "roomName",
-         to_char(si.start_time, 'HH24:MI') AS "startTime",
-         to_char(si.end_time, 'HH24:MI') AS "endTime",
-         si.status
-       FROM scheduled_interviews si
-       JOIN interview_tasks it
-         ON it.task_id = si.task_id
-        AND it.event_id = si.event_id
-       JOIN candidates c
-         ON c.candidate_id = it.candidate_id
-       JOIN rooms r
-         ON r.room_id = si.room_id
-        AND r.event_id = si.event_id
-       LEFT JOIN scheduled_interview_interviewers sii
-         ON sii.schedule_id = si.schedule_id
-        AND sii.event_id = si.event_id
-       LEFT JOIN interviewers i
-         ON i.interviewer_id = sii.interviewer_id
-       WHERE si.event_id = $1
-       GROUP BY
-         si.schedule_id,
-         it.task_id,
-         it.candidate_id,
-         c.full_name,
-         it.round_name,
-         si.room_id,
-         r.room_name,
-         si.start_time,
-         si.end_time,
-         si.status
-       ORDER BY si.start_time, si.schedule_id`,
-      [eventId]
-    );
+    const [
+      slotResult,
+      candidateResult,
+      interviewerResult,
+      roomResult,
+      taskResult,
+      scheduleResult,
+    ] = await Promise.all([
+      pool.query(
+        `SELECT to_char(slot_time, 'HH24:MI') AS time
+         FROM event_time_slots
+         WHERE event_id = $1
+         ORDER BY slot_time`,
+        [eventId]
+      ),
+
+      pool.query(
+        `SELECT
+           c.candidate_id AS id,
+           c.full_name AS name,
+           COALESCE(
+             (
+               SELECT array_agg(
+                 to_char(ca.slot_time, 'HH24:MI')
+                 ORDER BY ca.slot_time
+               )
+               FROM candidate_availability ca
+               WHERE ca.event_id = ec.event_id
+                 AND ca.candidate_id = ec.candidate_id
+             ),
+             ARRAY[]::text[]
+           ) AS "availableSlots"
+         FROM event_candidates ec
+         JOIN candidates c
+           ON c.candidate_id = ec.candidate_id
+         WHERE ec.event_id = $1
+         ORDER BY c.full_name, c.candidate_id`,
+        [eventId]
+      ),
+
+      pool.query(
+        `SELECT
+           i.interviewer_id AS id,
+           i.full_name AS name,
+           COALESCE(
+             (
+               SELECT array_agg(s.skill ORDER BY s.skill)
+               FROM interviewer_skills s
+               WHERE s.interviewer_id = i.interviewer_id
+             ),
+             ARRAY[]::text[]
+           ) AS skills,
+           COALESCE(
+             (
+               SELECT array_agg(
+                 to_char(ia.slot_time, 'HH24:MI')
+                 ORDER BY ia.slot_time
+               )
+               FROM interviewer_availability ia
+               WHERE ia.event_id = ei.event_id
+                 AND ia.interviewer_id = ei.interviewer_id
+             ),
+             ARRAY[]::text[]
+           ) AS "availableSlots",
+           ei.max_interviews_per_day AS "maxInterviewsPerDay"
+         FROM event_interviewers ei
+         JOIN interviewers i
+           ON i.interviewer_id = ei.interviewer_id
+         WHERE ei.event_id = $1
+         ORDER BY i.full_name, i.interviewer_id`,
+        [eventId]
+      ),
+
+      pool.query(
+        `SELECT
+           r.room_id AS id,
+           r.room_name AS name,
+           COALESCE(
+             (
+               SELECT array_agg(
+                 to_char(ra.slot_time, 'HH24:MI')
+                 ORDER BY ra.slot_time
+               )
+               FROM room_availability ra
+               WHERE ra.event_id = r.event_id
+                 AND ra.room_id = r.room_id
+             ),
+             ARRAY[]::text[]
+           ) AS "availableSlots"
+         FROM rooms r
+         WHERE r.event_id = $1
+         ORDER BY r.room_name, r.room_id`,
+        [eventId]
+      ),
+
+      pool.query(
+        `SELECT
+           task_id AS id,
+           candidate_id AS "candidateId",
+           round_name AS "roundName",
+           required_skills AS "requiredSkills",
+           duration_slots AS "durationSlots"
+         FROM interview_tasks
+         WHERE event_id = $1
+         ORDER BY round_name, task_id`,
+        [eventId]
+      ),
+
+      pool.query(
+        `SELECT
+           si.schedule_id AS "interviewId",
+           it.task_id AS "taskId",
+           it.candidate_id AS "candidateId",
+           c.full_name AS "candidateName",
+           it.round_name AS "roundName",
+           COALESCE(
+             string_agg(
+               DISTINCT i.full_name,
+               ', ' ORDER BY i.full_name
+             ),
+             ''
+           ) AS "interviewerName",
+           COALESCE(
+             array_agg(
+               DISTINCT sii.interviewer_id::text
+               ORDER BY sii.interviewer_id::text
+             ) FILTER (
+               WHERE sii.interviewer_id IS NOT NULL
+             ),
+             ARRAY[]::text[]
+           ) AS "interviewerIds",
+           si.room_id AS "roomId",
+           r.room_name AS "roomName",
+           to_char(si.start_time, 'HH24:MI') AS "startTime",
+           to_char(si.end_time, 'HH24:MI') AS "endTime",
+           si.status
+         FROM scheduled_interviews si
+         JOIN interview_tasks it
+           ON it.task_id = si.task_id
+          AND it.event_id = si.event_id
+         JOIN candidates c
+           ON c.candidate_id = it.candidate_id
+         JOIN rooms r
+           ON r.room_id = si.room_id
+          AND r.event_id = si.event_id
+         LEFT JOIN scheduled_interview_interviewers sii
+           ON sii.schedule_id = si.schedule_id
+          AND sii.event_id = si.event_id
+         LEFT JOIN interviewers i
+           ON i.interviewer_id = sii.interviewer_id
+         WHERE si.event_id = $1
+         GROUP BY
+           si.schedule_id,
+           it.task_id,
+           it.candidate_id,
+           c.full_name,
+           it.round_name,
+           si.room_id,
+           r.room_name,
+           si.start_time,
+           si.end_time,
+           si.status
+         ORDER BY si.start_time, si.schedule_id`,
+        [eventId]
+      ),
+    ]);
 
     return res.json({
       success: true,
       event: eventResult.rows[0],
       schedule: scheduleResult.rows,
       savedInterviews: scheduleResult.rowCount,
+      configuration: {
+        timeSlots: slotResult.rows.map((row) => row.time),
+        candidates: candidateResult.rows,
+        interviewers: interviewerResult.rows,
+        rooms: roomResult.rows,
+        tasks: taskResult.rows,
+      },
     });
   } catch (error) {
-    console.error("Failed to retrieve saved schedule:", error);
+    console.error("Failed to retrieve saved event configuration:", error);
 
     return res.status(500).json({
       success: false,
-      error: "Could not retrieve the saved schedule.",
+      error: "Could not retrieve the saved event and its configuration.",
     });
   }
 });
@@ -333,7 +535,6 @@ app.post("/api/events/:eventId/publish", async (req, res) => {
 
     const event = eventResult.rows[0];
 
-    // Repeated publication is safe and idempotent.
     if (event.status === "published") {
       const countResult = await client.query(
         `SELECT COUNT(*)::int AS count
