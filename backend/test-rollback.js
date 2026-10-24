@@ -1,3 +1,4 @@
+
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
 const pool = require("./db");
@@ -5,7 +6,11 @@ const pool = require("./db");
 const BASE_URL = "http://localhost:5000";
 
 async function main() {
-  const eventName = `Chronos Rollback Test ${randomUUID()}`;
+  const testToken = randomUUID();
+
+  const eventName = `Chronos Rollback Test ${testToken}`;
+  const candidateName = `Rollback Candidate ${testToken}`;
+  const interviewerName = `Rollback Interviewer ${testToken}`;
 
   const payload = {
     eventName,
@@ -15,7 +20,7 @@ async function main() {
     candidates: [
       {
         id: "c1",
-        name: "Rollback Candidate",
+        name: candidateName,
         availableSlots: ["10:00", "10:30"],
       },
     ],
@@ -23,10 +28,10 @@ async function main() {
     interviewers: [
       {
         id: "i1",
-        name: "Rollback Interviewer",
+        name: interviewerName,
 
-        // Deliberately invalid for the database.
-        // This should trigger a persistence failure.
+        // Deliberately invalid: the database requires
+        // interviewer_skills.skill to be NOT NULL.
         skills: ["DSA", null],
 
         availableSlots: ["10:00", "10:30"],
@@ -37,7 +42,7 @@ async function main() {
     rooms: [
       {
         id: "r1",
-        name: "Rollback Room",
+        name: "Rollback Test Room",
         availableSlots: ["10:00", "10:30"],
       },
     ],
@@ -53,14 +58,24 @@ async function main() {
     ],
   };
 
+  // Confirm this test's unique names do not already exist.
   const before = await pool.query(
-    `SELECT COUNT(*)::int AS count
-     FROM recruitment_events
-     WHERE event_name = $1`,
-    [eventName]
+    `SELECT
+       (SELECT COUNT(*)::int
+        FROM recruitment_events
+        WHERE event_name = $1) AS events,
+       (SELECT COUNT(*)::int
+        FROM candidates
+        WHERE full_name = $2) AS candidates,
+       (SELECT COUNT(*)::int
+        FROM interviewers
+        WHERE full_name = $3) AS interviewers`,
+    [eventName, candidateName, interviewerName]
   );
 
-  assert.equal(Number(before.rows[0].count), 0);
+  assert.equal(before.rows[0].events, 0);
+  assert.equal(before.rows[0].candidates, 0);
+  assert.equal(before.rows[0].interviewers, 0);
 
   const response = await fetch(`${BASE_URL}/api/schedule`, {
     method: "POST",
@@ -72,32 +87,55 @@ async function main() {
 
   const body = await response.json();
 
-  // Scheduling should succeed, but persistence should fail
-  // when the database rejects the null skill.
+  // Scheduling can succeed, but persistence must fail when
+  // PostgreSQL rejects the null skill. The API should return 500.
   assert.equal(
     response.status,
     500,
-    `Expected HTTP 500, received ${response.status}: ${JSON.stringify(body)}`
+    `Expected HTTP 500, got ${response.status}: ${JSON.stringify(body)}`
   );
 
   assert.equal(body.success, false);
 
+  // Verify that the transaction did not leave partial records.
   const after = await pool.query(
-    `SELECT COUNT(*)::int AS count
-     FROM recruitment_events
-     WHERE event_name = $1`,
-    [eventName]
+    `SELECT
+       (SELECT COUNT(*)::int
+        FROM recruitment_events
+        WHERE event_name = $1) AS events,
+       (SELECT COUNT(*)::int
+        FROM candidates
+        WHERE full_name = $2) AS candidates,
+       (SELECT COUNT(*)::int
+        FROM interviewers
+        WHERE full_name = $3) AS interviewers`,
+    [eventName, candidateName, interviewerName]
   );
 
   assert.equal(
-    Number(after.rows[0].count),
+    after.rows[0].events,
     0,
-    "A partial recruitment event remained after persistence failed."
+    "A partial recruitment event remained after rollback."
   );
 
-  console.log("PASS: Database persistence failure returns HTTP 500.");
-  console.log("PASS: Failed transaction leaves no recruitment event behind.");
-  console.log("\nRollback test passed: 2 checks, 0 failed.");
+  assert.equal(
+    after.rows[0].candidates,
+    0,
+    "An orphan candidate profile remained after rollback."
+  );
+
+  assert.equal(
+    after.rows[0].interviewers,
+    0,
+    "An orphan interviewer profile remained after rollback."
+  );
+
+  console.log("PASS: Persistence failure returns HTTP 500.");
+  console.log("PASS: No partial recruitment event remains.");
+  console.log("PASS: No orphan candidate profile remains.");
+  console.log("PASS: No orphan interviewer profile remains.");
+
+  console.log("\nRollback test passed: 4 checks, 0 failed.");
 }
 
 main()

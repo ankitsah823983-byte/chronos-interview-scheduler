@@ -1,8 +1,8 @@
 
-const pool = require("./db");
 const express = require("express");
 const cors = require("cors");
 
+const pool = require("./db");
 const { generateSchedule } = require("./scheduler");
 const { persistScheduleRun } = require("./persistence");
 
@@ -17,14 +17,22 @@ app.use(
 
 app.use(express.json({ limit: "1mb" }));
 
-// Basic API route.
+// Validate canonical UUIDs before querying UUID database columns.
+function isValidUuid(value) {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value
+    )
+  );
+}
+
 app.get("/", (req, res) => {
   res.json({
     message: "Welcome to Chronos Interview Scheduler API!",
   });
 });
 
-// Health check.
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
@@ -32,7 +40,7 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Generate a schedule and persist the scheduling run in PostgreSQL.
+// Generate a schedule and persist the run transactionally.
 app.post("/api/schedule", async (req, res) => {
   const {
     eventName,
@@ -52,7 +60,6 @@ app.post("/api/schedule", async (req, res) => {
     tasks,
   ];
 
-  // Validate the structure of the scheduling input.
   if (!inputs.every(Array.isArray)) {
     return res.status(400).json({
       success: false,
@@ -60,7 +67,6 @@ app.post("/api/schedule", async (req, res) => {
     });
   }
 
-  // Reject empty scheduling inputs.
   if (inputs.some((items) => items.length === 0)) {
     return res.status(400).json({
       success: false,
@@ -69,17 +75,26 @@ app.post("/api/schedule", async (req, res) => {
     });
   }
 
-  // Validate the event date strictly as YYYY-MM-DD.
-  const eventDateObject =
+  if (
+    typeof eventName !== "string" ||
+    eventName.trim().length === 0
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: "Event name is required.",
+    });
+  }
+
+  const dateObject =
     typeof eventDate === "string" &&
     /^\d{4}-\d{2}-\d{2}$/.test(eventDate)
       ? new Date(`${eventDate}T00:00:00.000Z`)
       : null;
 
   const validEventDate =
-    eventDateObject !== null &&
-    !Number.isNaN(eventDateObject.getTime()) &&
-    eventDateObject.toISOString().slice(0, 10) === eventDate;
+    dateObject !== null &&
+    !Number.isNaN(dateObject.getTime()) &&
+    dateObject.toISOString().slice(0, 10) === eventDate;
 
   if (!validEventDate) {
     return res.status(400).json({
@@ -91,7 +106,6 @@ app.post("/api/schedule", async (req, res) => {
 
   let result;
 
-  // Generate the schedule using the existing scheduling engine.
   try {
     result = generateSchedule({
       timeSlots,
@@ -107,11 +121,10 @@ app.post("/api/schedule", async (req, res) => {
     });
   }
 
-  // Persist the input and scheduling result transactionally.
   try {
     const persistence = await persistScheduleRun({
       input: {
-        eventName,
+        eventName: eventName.trim(),
         eventDate,
         timeSlots,
         candidates,
@@ -140,9 +153,16 @@ app.post("/api/schedule", async (req, res) => {
   }
 });
 
-// Retrieve a previously saved scheduling run.
+// Load an event and its persisted interview assignments.
 app.get("/api/schedules/:eventId", async (req, res) => {
   const { eventId } = req.params;
+
+  if (!isValidUuid(eventId)) {
+    return res.status(400).json({
+      success: false,
+      error: "Event ID must be a valid UUID.",
+    });
+  }
 
   try {
     const eventResult = await pool.query(
@@ -157,7 +177,7 @@ app.get("/api/schedules/:eventId", async (req, res) => {
       [eventId]
     );
 
-    if (eventResult.rows.length === 0) {
+    if (eventResult.rowCount === 0) {
       return res.status(404).json({
         success: false,
         error: "Scheduling event not found.",
@@ -167,13 +187,27 @@ app.get("/api/schedules/:eventId", async (req, res) => {
     const scheduleResult = await pool.query(
       `SELECT
          si.schedule_id AS "interviewId",
-         split_part(si.task_id, ':', 2) AS "taskId",
-         split_part(it.candidate_id, ':', 2) AS "candidateId",
+         it.task_id AS "taskId",
+         it.candidate_id AS "candidateId",
          c.full_name AS "candidateName",
          it.round_name AS "roundName",
-         split_part(si.interviewer_id, ':', 2) AS "interviewerId",
-         i.full_name AS "interviewerName",
-         split_part(si.room_id, ':', 2) AS "roomId",
+         COALESCE(
+           string_agg(
+             DISTINCT i.full_name,
+             ', ' ORDER BY i.full_name
+           ),
+           ''
+         ) AS "interviewerName",
+         COALESCE(
+           array_agg(
+             DISTINCT sii.interviewer_id::text
+             ORDER BY sii.interviewer_id::text
+           ) FILTER (
+             WHERE sii.interviewer_id IS NOT NULL
+           ),
+           ARRAY[]::text[]
+         ) AS "interviewerIds",
+         si.room_id AS "roomId",
          r.room_name AS "roomName",
          to_char(si.start_time, 'HH24:MI') AS "startTime",
          to_char(si.end_time, 'HH24:MI') AS "endTime",
@@ -181,13 +215,29 @@ app.get("/api/schedules/:eventId", async (req, res) => {
        FROM scheduled_interviews si
        JOIN interview_tasks it
          ON it.task_id = si.task_id
+        AND it.event_id = si.event_id
        JOIN candidates c
          ON c.candidate_id = it.candidate_id
-       JOIN interviewers i
-         ON i.interviewer_id = si.interviewer_id
        JOIN rooms r
          ON r.room_id = si.room_id
+        AND r.event_id = si.event_id
+       LEFT JOIN scheduled_interview_interviewers sii
+         ON sii.schedule_id = si.schedule_id
+        AND sii.event_id = si.event_id
+       LEFT JOIN interviewers i
+         ON i.interviewer_id = sii.interviewer_id
        WHERE si.event_id = $1
+       GROUP BY
+         si.schedule_id,
+         it.task_id,
+         it.candidate_id,
+         c.full_name,
+         it.round_name,
+         si.room_id,
+         r.room_name,
+         si.start_time,
+         si.end_time,
+         si.status
        ORDER BY si.start_time, si.schedule_id`,
       [eventId]
     );

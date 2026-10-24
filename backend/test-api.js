@@ -1,3 +1,4 @@
+
 const assert = require("node:assert/strict");
 
 const BASE_URL = "http://localhost:5000";
@@ -173,7 +174,7 @@ async function testInvalidEventDate() {
   assert.match(body.error, /valid date in YYYY-MM-DD format/i);
 }
 
-// 7. Impossible schedule returns 422
+// 7. Impossible schedule returns 422 and saves no interviews
 async function testInfeasibleSchedule() {
   const payload = makePayload();
 
@@ -208,7 +209,7 @@ async function testInfeasibleSchedule() {
   assert.equal(body.persistence.savedInterviews, 0);
 }
 
-// 8. Retrieve the saved schedule, including its date
+// 8. Retrieve event date, saved interviews, and interviewer assignments
 async function testRetrieveSavedSchedule() {
   assert.ok(savedEventId, "Successful test must create an event first");
 
@@ -218,13 +219,16 @@ async function testRetrieveSavedSchedule() {
 
   const body = await response.json();
 
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 200, JSON.stringify(body));
   assert.equal(body.success, true);
   assert.equal(body.event.eventId, savedEventId);
   assert.equal(body.event.eventName, "Chronos API Test Event");
   assert.equal(body.event.eventDate, TEST_EVENT_DATE);
+  assert.equal(body.event.status, "draft");
   assert.equal(body.schedule.length, 2);
   assert.equal(body.savedInterviews, 2);
+
+  const interviewIds = new Set();
 
   for (const interview of body.schedule) {
     assert.ok(
@@ -232,7 +236,23 @@ async function testRetrieveSavedSchedule() {
         interview.interviewId !== null,
       "Expected an individual interview ID"
     );
+
+    interviewIds.add(String(interview.interviewId));
+
+    assert.ok(interview.candidateId);
+    assert.ok(interview.candidateName);
+    assert.ok(interview.roomId);
+    assert.ok(interview.roomName);
+    assert.ok(interview.interviewerName);
+    assert.ok(interview.startTime);
+    assert.ok(interview.endTime);
   }
+
+  assert.equal(
+    interviewIds.size,
+    2,
+    "Each saved interview should have a distinct Interview ID"
+  );
 }
 
 // 9. Unknown Event ID returns 404
@@ -289,7 +309,7 @@ async function main() {
   );
 
   await test(
-    "Retrieves the saved schedule, date and interview IDs",
+    "Retrieves saved event data and distinct Interview IDs",
     testRetrieveSavedSchedule
   );
 

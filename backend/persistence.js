@@ -1,11 +1,6 @@
+
 const { randomUUID } = require("crypto");
 const pool = require("./db");
-
-function databaseId(eventId, originalId) {
-  // Form IDs such as c1 and t1 may be reused in future events.
-  // Prefix them so each event gets its own records.
-  return `${eventId}:${originalId}`;
-}
 
 async function persistScheduleRun({ input, result }) {
   const eventId = randomUUID();
@@ -20,7 +15,7 @@ async function persistScheduleRun({ input, result }) {
         ? input.eventName.trim()
         : `Chronos scheduling run ${new Date().toISOString()}`;
 
-    // Save the event name and the selected event date.
+    // 1. Create the recruitment event with its selected date.
     await client.query(
       `INSERT INTO recruitment_events
          (event_id, event_name, event_date, status)
@@ -28,6 +23,7 @@ async function persistScheduleRun({ input, result }) {
       [eventId, eventName, input.eventDate]
     );
 
+    // 2. Save the event's allowed time slots.
     const validSlots = new Set(input.timeSlots);
 
     for (const slot of input.timeSlots) {
@@ -44,19 +40,32 @@ async function persistScheduleRun({ input, result }) {
     const roomIds = new Map();
     const taskIds = new Map();
 
-    // Save candidates and their availability.
+    // 3. Save candidate profiles, event participation and availability.
     for (const candidate of input.candidates) {
-      const id = databaseId(eventId, candidate.id);
-      candidateIds.set(candidate.id, id);
+      const name = candidate.name?.trim() || candidate.id;
+      const email =
+        typeof candidate.email === "string" && candidate.email.trim()
+          ? candidate.email.trim()
+          : null;
+
+      const candidateResult = await client.query(
+        `INSERT INTO candidates
+           (candidate_id, full_name, email)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (email)
+         DO UPDATE SET full_name = EXCLUDED.full_name
+         RETURNING candidate_id`,
+        [randomUUID(), name, email]
+      );
+
+      const candidateId = candidateResult.rows[0].candidate_id;
+      candidateIds.set(candidate.id, candidateId);
 
       await client.query(
-        `INSERT INTO candidates (candidate_id, full_name, email)
-         VALUES ($1, $2, $3)`,
-        [
-          id,
-          candidate.name?.trim() || candidate.id,
-          candidate.email || null,
-        ]
+        `INSERT INTO event_candidates (event_id, candidate_id)
+         VALUES ($1, $2)
+         ON CONFLICT DO NOTHING`,
+        [eventId, candidateId]
       );
 
       for (const slot of candidate.availableSlots || []) {
@@ -67,25 +76,43 @@ async function persistScheduleRun({ input, result }) {
              (event_id, candidate_id, slot_time)
            VALUES ($1, $2, $3)
            ON CONFLICT DO NOTHING`,
-          [eventId, id, slot]
+          [eventId, candidateId, slot]
         );
       }
     }
 
-    // Save interviewers, skill tags and availability.
+    // 4. Save interviewer profiles, event participation,
+    // skills and event-specific availability/workload.
     for (const interviewer of input.interviewers) {
-      const id = databaseId(eventId, interviewer.id);
-      interviewerIds.set(interviewer.id, id);
+      const name = interviewer.name?.trim() || interviewer.id;
+      const email =
+        typeof interviewer.email === "string" && interviewer.email.trim()
+          ? interviewer.email.trim()
+          : null;
+
+      const interviewerResult = await client.query(
+        `INSERT INTO interviewers
+           (interviewer_id, full_name, email)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (email)
+         DO UPDATE SET full_name = EXCLUDED.full_name
+         RETURNING interviewer_id`,
+        [randomUUID(), name, email]
+      );
+
+      const interviewerId = interviewerResult.rows[0].interviewer_id;
+      interviewerIds.set(interviewer.id, interviewerId);
 
       await client.query(
-        `INSERT INTO interviewers
-           (interviewer_id, full_name, email,
-            max_interviews_per_day)
-         VALUES ($1, $2, $3, $4)`,
+        `INSERT INTO event_interviewers
+           (event_id, interviewer_id, max_interviews_per_day)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (event_id, interviewer_id)
+         DO UPDATE SET
+           max_interviews_per_day = EXCLUDED.max_interviews_per_day`,
         [
-          id,
-          interviewer.name?.trim() || interviewer.id,
-          interviewer.email || null,
+          eventId,
+          interviewerId,
           interviewer.maxInterviewsPerDay ?? 2,
         ]
       );
@@ -95,7 +122,7 @@ async function persistScheduleRun({ input, result }) {
           `INSERT INTO interviewer_skills (interviewer_id, skill)
            VALUES ($1, $2)
            ON CONFLICT DO NOTHING`,
-          [id, skill]
+          [interviewerId, skill]
         );
       }
 
@@ -107,20 +134,20 @@ async function persistScheduleRun({ input, result }) {
              (event_id, interviewer_id, slot_time)
            VALUES ($1, $2, $3)
            ON CONFLICT DO NOTHING`,
-          [eventId, id, slot]
+          [eventId, interviewerId, slot]
         );
       }
     }
 
-    // Save rooms and their availability.
+    // 5. Save event-owned rooms and their availability.
     for (const room of input.rooms) {
-      const id = databaseId(eventId, room.id);
-      roomIds.set(room.id, id);
+      const roomId = randomUUID();
+      roomIds.set(room.id, roomId);
 
       await client.query(
-        `INSERT INTO rooms (room_id, room_name)
-         VALUES ($1, $2)`,
-        [id, room.name?.trim() || room.id]
+        `INSERT INTO rooms (room_id, event_id, room_name)
+         VALUES ($1, $2, $3)`,
+        [roomId, eventId, room.name?.trim() || room.id]
       );
 
       for (const slot of room.availableSlots || []) {
@@ -131,15 +158,23 @@ async function persistScheduleRun({ input, result }) {
              (event_id, room_id, slot_time)
            VALUES ($1, $2, $3)
            ON CONFLICT DO NOTHING`,
-          [eventId, id, slot]
+          [eventId, roomId, slot]
         );
       }
     }
 
-    // Save interview tasks.
+    // 6. Save tasks using real database IDs.
     for (const task of input.tasks) {
-      const id = databaseId(eventId, task.id);
-      taskIds.set(task.id, id);
+      const taskId = randomUUID();
+      taskIds.set(task.id, taskId);
+
+      const candidateId = candidateIds.get(task.candidateId);
+
+      if (!candidateId) {
+        throw new Error(
+          `No saved candidate was found for task ${task.id}.`
+        );
+      }
 
       await client.query(
         `INSERT INTO interview_tasks
@@ -147,9 +182,9 @@ async function persistScheduleRun({ input, result }) {
             duration_slots, required_skills)
          VALUES ($1, $2, $3, $4, $5, $6)`,
         [
-          id,
+          taskId,
           eventId,
-          candidateIds.get(task.candidateId),
+          candidateId,
           task.roundName,
           task.durationSlots ?? 1,
           task.requiredSkills || [],
@@ -157,24 +192,63 @@ async function persistScheduleRun({ input, result }) {
       );
     }
 
-    // Only persist scheduled interviews when a complete schedule
-    // was generated. Failed attempts still retain their input data.
+    // 7. Save scheduled interviews only when generation succeeds.
+    // Each interview can have one or more interviewer assignments.
     if (result.success) {
       for (const item of result.schedule) {
-        await client.query(
+        const taskId = taskIds.get(item.taskId);
+        const roomId = roomIds.get(item.roomId);
+
+        if (!taskId || !roomId) {
+          throw new Error(
+            `Missing saved task or room for scheduled task ${item.taskId}.`
+          );
+        }
+
+        const scheduleResult = await client.query(
           `INSERT INTO scheduled_interviews
-             (event_id, task_id, interviewer_id, room_id,
-              start_time, end_time, status)
-           VALUES ($1, $2, $3, $4, $5, $6, 'draft')`,
+             (event_id, task_id, room_id, start_time, end_time, status)
+           VALUES ($1, $2, $3, $4, $5, 'draft')
+           RETURNING schedule_id`,
           [
             eventId,
-            taskIds.get(item.taskId),
-            interviewerIds.get(item.interviewerId),
-            roomIds.get(item.roomId),
+            taskId,
+            roomId,
             item.startTime,
             item.endTime,
           ]
         );
+
+        const scheduleId = scheduleResult.rows[0].schedule_id;
+
+        const originalInterviewerIds = Array.isArray(item.interviewerIds)
+          ? item.interviewerIds
+          : item.interviewerId
+            ? [item.interviewerId]
+            : [];
+
+        if (originalInterviewerIds.length === 0) {
+          throw new Error(
+            `No interviewer assignment found for scheduled task ${item.taskId}.`
+          );
+        }
+
+        for (const originalInterviewerId of originalInterviewerIds) {
+          const interviewerId = interviewerIds.get(originalInterviewerId);
+
+          if (!interviewerId) {
+            throw new Error(
+              `No saved interviewer was found for task ${item.taskId}.`
+            );
+          }
+
+          await client.query(
+            `INSERT INTO scheduled_interview_interviewers
+               (event_id, schedule_id, interviewer_id)
+             VALUES ($1, $2, $3)`,
+            [eventId, scheduleId, interviewerId]
+          );
+        }
       }
     }
 
@@ -182,12 +256,15 @@ async function persistScheduleRun({ input, result }) {
 
     return {
       eventId,
-      savedInterviews: result.success
-        ? result.schedule.length
-        : 0,
+      savedInterviews: result.success ? result.schedule.length : 0,
     };
   } catch (error) {
-    await client.query("ROLLBACK");
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error("Database rollback failed:", rollbackError);
+    }
+
     throw error;
   } finally {
     client.release();
