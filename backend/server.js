@@ -57,6 +57,13 @@ app.post("/api/schedule", async (req, res) => {
     });
   }
 
+  if (inputs.some((items) => items.length === 0)) {
+  return res.status(400).json({
+    success: false,
+    error: "All scheduling input arrays must contain at least one item.",
+  });
+}
+
   let result;
 
   // First, generate the schedule using the existing engine.

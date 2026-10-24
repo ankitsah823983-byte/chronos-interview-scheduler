@@ -119,6 +119,21 @@ async function testMissingFields() {
   assert.match(body.error, /fields must be arrays/i);
 }
 
+// Reject empty scheduling arrays
+async function testEmptySchedulingArrays() {
+  const { response, body } = await postSchedule({
+    timeSlots: [],
+    candidates: [],
+    interviewers: [],
+    rooms: [],
+    tasks: [],
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(body.success, false);
+  assert.match(body.error, /must contain at least one item/i);
+}
+
 // 3. Invalid time format
 async function testInvalidTimeFormat() {
   const payload = makePayload();
@@ -218,6 +233,11 @@ async function main() {
     "Rejects requests with missing required arrays",
     testMissingFields
   );
+
+  await test(
+  "Rejects empty scheduling input arrays",
+  testEmptySchedulingArrays
+);
 
   await test(
     "Rejects an invalid time format",
