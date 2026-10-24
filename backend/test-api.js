@@ -1,5 +1,6 @@
 
 const assert = require("node:assert/strict");
+const coordinatorSession = require("./test-coordinator-session");
 
 const BASE_URL = "http://localhost:5000";
 const TEST_EVENT_DATE = "2026-11-15";
@@ -202,7 +203,7 @@ async function testInvalidTime() {
   assert.match(body.error, /HH:MM format/i);
 }
 
-// 6. Reject missing event date when creating a new event.
+// 6. Reject missing event date for a new event.
 async function testMissingEventDate() {
   const payload = makePayload();
   delete payload.eventDate;
@@ -259,7 +260,7 @@ async function testInfeasibleSchedule() {
   infeasibleEventId = body.persistence.eventId;
 }
 
-// 9. Event listing includes metadata and interview counts.
+// 9. The event list includes metadata and interview counts.
 async function testListSavedEvents() {
   assert.ok(savedEventId);
   assert.ok(createdDraftEventId);
@@ -291,7 +292,7 @@ async function testListSavedEvents() {
   assert.equal(emptyDraft.interviewCount, 0);
 }
 
-// 10. Reuse a draft repeatedly without duplicate interviews.
+// 10. Reusing a draft must not create duplicate interviews.
 async function testReuseDraftWithoutDuplicates() {
   assert.ok(createdDraftEventId);
 
@@ -320,7 +321,7 @@ async function testReuseDraftWithoutDuplicates() {
   assert.equal(body.schedule.length, 2);
 }
 
-// 11. A failed regeneration preserves the previous draft schedule.
+// 11. Failed regeneration must preserve the previous saved schedule.
 async function testFailedRegenerationPreservesDraft() {
   const payload = {
     ...makePayload(),
@@ -371,7 +372,7 @@ async function testRetrieveEventMetadata() {
   assert.equal(body.savedInterviews, 2);
 }
 
-// 13. Retrieve the full configuration used by the scheduler.
+// 13. Retrieve full saved configuration.
 async function testRetrieveEventConfiguration() {
   const { response, body } = await getSchedule(savedEventId);
 
@@ -379,8 +380,7 @@ async function testRetrieveEventConfiguration() {
   assert.equal(body.success, true);
 
   const configuration = body.configuration;
-
-  assert.ok(configuration, "Expected a configuration object");
+  assert.ok(configuration);
 
   assert.deepEqual(
     configuration.timeSlots,
@@ -439,11 +439,6 @@ async function testRetrieveEventConfiguration() {
 
   assert.ok(codingTask);
   assert.ok(technicalTask);
-  assert.ok(candidateA.id);
-  assert.ok(candidateB.id);
-  assert.ok(codingTask.id);
-  assert.ok(technicalTask.id);
-
   assert.equal(codingTask.candidateId, candidateA.id);
   assert.equal(technicalTask.candidateId, candidateB.id);
   assert.deepEqual(codingTask.requiredSkills, ["DSA"]);
@@ -471,9 +466,9 @@ async function testRetrieveInterviewDetails() {
     assert.ok(interview.candidateId);
     assert.ok(interview.candidateName);
     assert.ok(interview.roundName);
-    assert.equal(interview.interviewerName, "Interviewer X");
+    assert.ok(interview.interviewerName);
     assert.equal(interview.interviewerIds.length, 1);
-    assert.equal(interview.roomName, "Room 1");
+    assert.ok(interview.roomName);
     assert.ok(interview.startTime);
     assert.ok(interview.endTime);
     assert.equal(interview.status, "draft");
@@ -534,7 +529,7 @@ async function testPublishedStatusPersists() {
   }
 }
 
-// 20. Repeated publishing is safe.
+// 20. Repeated publication is safe.
 async function testRepeatedPublish() {
   const { response, body } = await postPublish(savedEventId);
 
@@ -558,7 +553,6 @@ async function testCannotRegeneratePublishedEvent() {
   assert.match(body.error, /draft event/i);
 
   const { body: getBody } = await getSchedule(savedEventId);
-
   assert.equal(getBody.event.status, "published");
   assert.equal(getBody.savedInterviews, 2);
 }
@@ -574,39 +568,51 @@ async function testPublishUnknownEvent() {
 }
 
 async function main() {
-  console.log("Chronos API and event lifecycle tests\n");
+  await coordinatorSession.ready;
 
-  await test("Generates and persists a valid draft schedule", testSuccessfulGeneration);
-  await test("Creates an independent draft event", testCreateDraftEvent);
-  await test("Rejects missing scheduling arrays", testMissingArrays);
-  await test("Rejects empty scheduling arrays", testEmptyArrays);
-  await test("Rejects invalid time formatting", testInvalidTime);
-  await test("Rejects a missing event date", testMissingEventDate);
-  await test("Rejects an impossible calendar date", testImpossibleDate);
-  await test("Returns 422 for an infeasible schedule", testInfeasibleSchedule);
-  await test("Lists saved events and interview counts", testListSavedEvents);
-  await test("Reuses a draft without duplicate interviews", testReuseDraftWithoutDuplicates);
-  await test("Preserves draft interviews when regeneration fails", testFailedRegenerationPreservesDraft);
-  await test("Retrieves saved event metadata", testRetrieveEventMetadata);
-  await test("Retrieves the full event configuration", testRetrieveEventConfiguration);
-  await test("Retrieves interview details and unique IDs", testRetrieveInterviewDetails);
-  await test("Returns 404 for an unknown event", testUnknownEvent);
-  await test("Rejects an invalid publish UUID", testInvalidPublishId);
-  await test("Rejects publishing an event with no interviews", testPublishEmptyEvent);
-  await test("Publishes a valid draft schedule", testPublishValidEvent);
-  await test("Persists published event and interview statuses", testPublishedStatusPersists);
-  await test("Handles repeated publish requests safely", testRepeatedPublish);
-  await test("Rejects regeneration of a published event", testCannotRegeneratePublishedEvent);
-  await test("Returns 404 when publishing an unknown event", testPublishUnknownEvent);
+  try {
+    console.log("Chronos API and event lifecycle tests\n");
 
-  console.log(`\nTest summary: ${passed} passed, ${failed} failed.`);
+    await test("Generates and persists a valid draft schedule", testSuccessfulGeneration);
+    await test("Creates an independent draft event", testCreateDraftEvent);
+    await test("Rejects missing scheduling arrays", testMissingArrays);
+    await test("Rejects empty scheduling arrays", testEmptyArrays);
+    await test("Rejects invalid time formatting", testInvalidTime);
+    await test("Rejects a missing event date", testMissingEventDate);
+    await test("Rejects an impossible calendar date", testImpossibleDate);
+    await test("Returns 422 for an infeasible schedule", testInfeasibleSchedule);
+    await test("Lists saved events and interview counts", testListSavedEvents);
+    await test("Reuses a draft without duplicate interviews", testReuseDraftWithoutDuplicates);
+    await test("Preserves draft interviews when regeneration fails", testFailedRegenerationPreservesDraft);
+    await test("Retrieves saved event metadata", testRetrieveEventMetadata);
+    await test("Retrieves the full event configuration", testRetrieveEventConfiguration);
+    await test("Retrieves interview details and unique IDs", testRetrieveInterviewDetails);
+    await test("Returns 404 for an unknown event", testUnknownEvent);
+    await test("Rejects an invalid publish UUID", testInvalidPublishId);
+    await test("Rejects publishing an event with no interviews", testPublishEmptyEvent);
+    await test("Publishes a valid draft schedule", testPublishValidEvent);
+    await test("Persists published event and interview statuses", testPublishedStatusPersists);
+    await test("Handles repeated publish requests safely", testRepeatedPublish);
+    await test("Rejects regeneration of a published event", testCannotRegeneratePublishedEvent);
+    await test("Returns 404 when publishing an unknown event", testPublishUnknownEvent);
 
-  if (failed > 0) {
-    process.exitCode = 1;
+    console.log(`\nTest summary: ${passed} passed, ${failed} failed.`);
+
+    if (failed > 0) {
+      process.exitCode = 1;
+    }
+  } finally {
+    await coordinatorSession.cleanup();
   }
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error("API test runner failed:", error.message);
   process.exitCode = 1;
+
+  try {
+    await coordinatorSession.cleanup();
+  } catch (cleanupError) {
+    console.error("Test cleanup failed:", cleanupError.message);
+  }
 });

@@ -2,147 +2,165 @@
 const assert = require("node:assert/strict");
 const { randomUUID } = require("node:crypto");
 const pool = require("./db");
+const coordinatorSession = require("./test-coordinator-session");
 
 const BASE_URL = "http://localhost:5000";
 
 async function main() {
-  const testToken = randomUUID();
+  let passed = 0;
+  let failed = 0;
 
-  const eventName = `Chronos Rollback Test ${testToken}`;
-  const candidateName = `Rollback Candidate ${testToken}`;
-  const interviewerName = `Rollback Interviewer ${testToken}`;
+  const token = randomUUID();
+  const eventName = `Chronos Rollback Test ${token}`;
+  const candidateName = `Rollback Candidate ${token}`;
+  const interviewerName = `Rollback Interviewer ${token}`;
 
-  const payload = {
-    eventName,
-    eventDate: "2026-11-16",
-    timeSlots: ["10:00", "10:30"],
+  async function check(name, callback) {
+    try {
+      await callback();
+      passed++;
+      console.log(`PASS: ${name}`);
+    } catch (error) {
+      failed++;
+      console.error(`FAIL: ${name}`);
+      console.error(`  ${error.message}`);
+    }
+  }
 
-    candidates: [
-      {
-        id: "c1",
-        name: candidateName,
-        availableSlots: ["10:00", "10:30"],
-      },
-    ],
+  try {
+    await coordinatorSession.ready;
 
-    interviewers: [
-      {
-        id: "i1",
-        name: interviewerName,
+    console.log("Chronos transactional rollback tests\n");
 
-        // Deliberately invalid: the database requires
-        // interviewer_skills.skill to be NOT NULL.
-        skills: ["DSA", null],
+    const payload = {
+      eventName,
+      eventDate: "2026-11-16",
+      timeSlots: ["10:00", "10:30"],
 
-        availableSlots: ["10:00", "10:30"],
-        maxInterviewsPerDay: 1,
-      },
-    ],
+      candidates: [
+        {
+          id: "rollback-candidate",
+          name: candidateName,
+          availableSlots: ["10:00", "10:30"],
+        },
+      ],
 
-    rooms: [
-      {
-        id: "r1",
-        name: "Rollback Test Room",
-        availableSlots: ["10:00", "10:30"],
-      },
-    ],
+      interviewers: [
+        {
+          id: "rollback-interviewer",
+          name: interviewerName,
+          skills: ["DSA", null],
+          availableSlots: ["10:00", "10:30"],
+          maxInterviewsPerDay: 2,
+        },
+      ],
 
-    tasks: [
-      {
-        id: "t1",
-        candidateId: "c1",
-        roundName: "Coding Interview",
-        requiredSkills: ["DSA"],
-        durationSlots: 1,
-      },
-    ],
-  };
+      rooms: [
+        {
+          id: "rollback-room",
+          name: "Rollback Test Room",
+          availableSlots: ["10:00", "10:30"],
+        },
+      ],
 
-  // Confirm this test's unique names do not already exist.
-  const before = await pool.query(
-    `SELECT
-       (SELECT COUNT(*)::int
-        FROM recruitment_events
-        WHERE event_name = $1) AS events,
-       (SELECT COUNT(*)::int
-        FROM candidates
-        WHERE full_name = $2) AS candidates,
-       (SELECT COUNT(*)::int
-        FROM interviewers
-        WHERE full_name = $3) AS interviewers`,
-    [eventName, candidateName, interviewerName]
-  );
+      tasks: [
+        {
+          id: "rollback-task",
+          candidateId: "rollback-candidate",
+          roundName: "Rollback Test Interview",
+          requiredSkills: ["DSA"],
+          durationSlots: 1,
+        },
+      ],
+    };
 
-  assert.equal(before.rows[0].events, 0);
-  assert.equal(before.rows[0].candidates, 0);
-  assert.equal(before.rows[0].interviewers, 0);
+    let response;
+    let body;
 
-  const response = await fetch(`${BASE_URL}/api/schedule`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+    await check(
+      "Persistence failure returns HTTP 500",
+      async () => {
+        response = await fetch(`${BASE_URL}/api/schedule`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
 
-  const body = await response.json();
+        body = await response.json();
 
-  // Scheduling can succeed, but persistence must fail when
-  // PostgreSQL rejects the null skill. The API should return 500.
-  assert.equal(
-    response.status,
-    500,
-    `Expected HTTP 500, got ${response.status}: ${JSON.stringify(body)}`
-  );
+        assert.equal(
+          response.status,
+          500,
+          `Expected HTTP 500, received ${response.status}: ${JSON.stringify(body)}`
+        );
 
-  assert.equal(body.success, false);
+        assert.equal(body.success, false);
+      }
+    );
 
-  // Verify that the transaction did not leave partial records.
-  const after = await pool.query(
-    `SELECT
-       (SELECT COUNT(*)::int
-        FROM recruitment_events
-        WHERE event_name = $1) AS events,
-       (SELECT COUNT(*)::int
-        FROM candidates
-        WHERE full_name = $2) AS candidates,
-       (SELECT COUNT(*)::int
-        FROM interviewers
-        WHERE full_name = $3) AS interviewers`,
-    [eventName, candidateName, interviewerName]
-  );
+    await check(
+      "No partial recruitment event remains",
+      async () => {
+        const result = await pool.query(
+          `SELECT COUNT(*)::int AS count
+           FROM recruitment_events
+           WHERE event_name = $1`,
+          [eventName]
+        );
 
-  assert.equal(
-    after.rows[0].events,
-    0,
-    "A partial recruitment event remained after rollback."
-  );
+        assert.equal(result.rows[0].count, 0);
+      }
+    );
 
-  assert.equal(
-    after.rows[0].candidates,
-    0,
-    "An orphan candidate profile remained after rollback."
-  );
+    await check(
+      "No orphan candidate profile remains",
+      async () => {
+        const result = await pool.query(
+          `SELECT COUNT(*)::int AS count
+           FROM candidates
+           WHERE full_name = $1`,
+          [candidateName]
+        );
 
-  assert.equal(
-    after.rows[0].interviewers,
-    0,
-    "An orphan interviewer profile remained after rollback."
-  );
+        assert.equal(result.rows[0].count, 0);
+      }
+    );
 
-  console.log("PASS: Persistence failure returns HTTP 500.");
-  console.log("PASS: No partial recruitment event remains.");
-  console.log("PASS: No orphan candidate profile remains.");
-  console.log("PASS: No orphan interviewer profile remains.");
+    await check(
+      "No orphan interviewer profile remains",
+      async () => {
+        const result = await pool.query(
+          `SELECT COUNT(*)::int AS count
+           FROM interviewers
+           WHERE full_name = $1`,
+          [interviewerName]
+        );
 
-  console.log("\nRollback test passed: 4 checks, 0 failed.");
+        assert.equal(result.rows[0].count, 0);
+      }
+    );
+
+    console.log(
+      `\nRollback test summary: ${passed} passed, ${failed} failed.`
+    );
+
+    if (failed > 0) {
+      process.exitCode = 1;
+    }
+  } finally {
+    await coordinatorSession.cleanup();
+  }
 }
 
-main()
-  .catch((error) => {
-    console.error("ROLLBACK TEST FAILED:", error.message);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await pool.end();
-  });
+main().catch(async (error) => {
+  console.error("Rollback test runner failed:", error.message);
+  process.exitCode = 1;
+
+  try {
+    await coordinatorSession.cleanup();
+  } catch (cleanupError) {
+    console.error("Test cleanup failed:", cleanupError.message);
+  }
+});

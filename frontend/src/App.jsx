@@ -84,8 +84,15 @@ function compareTimes(a, b) {
   return a.localeCompare(b);
 }
 
+async function apiFetch(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    credentials: "include",
+  });
+}
+
 async function fetchSavedEvents() {
-  const response = await fetch("http://localhost:5000/api/events");
+  const response = await apiFetch("http://localhost:5000/api/events");
   const data = await response.json();
 
   if (!response.ok || !data.success || !Array.isArray(data.events)) {
@@ -380,7 +387,7 @@ function App() {
     setApiMessageTitle("");
 
     try {
-      const response = await fetch("http://localhost:5000/api/events", {
+      const response = await apiFetch("http://localhost:5000/api/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -628,7 +635,7 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         "http://localhost:5000/api/schedule",
         {
           method: "POST",
@@ -665,7 +672,7 @@ function App() {
 
         if (eventId) {
           try {
-            const savedResponse = await fetch(
+            const savedResponse = await apiFetch(
               `http://localhost:5000/api/schedules/${encodeURIComponent(eventId)}`
             );
 
@@ -702,7 +709,7 @@ function App() {
       // leaving the coordinator with a blank result view.
       if (activeEventId && response.status === 422) {
         try {
-          const previousResponse = await fetch(
+          const previousResponse = await apiFetch(
             `http://localhost:5000/api/schedules/${encodeURIComponent(activeEventId)}`
           );
           const previousData = await previousResponse.json();
@@ -761,7 +768,7 @@ function App() {
     setApiMessageTitle("");
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `http://localhost:5000/api/events/${encodeURIComponent(eventId)}/publish`,
         {
           method: "POST",
@@ -817,7 +824,7 @@ function App() {
     setGeneratedSchedule([]);
 
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `http://localhost:5000/api/schedules/${encodeURIComponent(eventId)}`
       );
 
