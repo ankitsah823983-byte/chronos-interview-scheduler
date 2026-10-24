@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
 
 const INITIAL_TIME_SLOTS = ["10:00", "10:30", "11:00", "11:30"];
@@ -84,6 +84,17 @@ function compareTimes(a, b) {
   return a.localeCompare(b);
 }
 
+async function fetchSavedEvents() {
+  const response = await fetch("http://localhost:5000/api/events");
+  const data = await response.json();
+
+  if (!response.ok || !data.success || !Array.isArray(data.events)) {
+    throw new Error(data.error || "Could not retrieve saved events.");
+  }
+
+  return data.events;
+}
+
 function App() {
   const [eventName, setEventName] = useState("Chronos Recruitment Event");
   const [eventDate, setEventDate] = useState("");
@@ -92,14 +103,8 @@ function App() {
     INITIAL_TIME_SLOTS.join(", ")
   );
 
-  const [candidates, setCandidates] = useState(
-    INITIAL_CANDIDATES
-  );
-
-  const [interviewers, setInterviewers] = useState(
-    INITIAL_INTERVIEWERS
-  );
-
+  const [candidates, setCandidates] = useState(INITIAL_CANDIDATES);
+  const [interviewers, setInterviewers] = useState(INITIAL_INTERVIEWERS);
   const [rooms, setRooms] = useState(INITIAL_ROOMS);
   const [tasks, setTasks] = useState(INITIAL_TASKS);
 
@@ -108,7 +113,10 @@ function App() {
   const [savedEventId, setSavedEventId] = useState(
     () => localStorage.getItem("chronosLastSavedEventId") || ""
   );
+
   const [eventStatus, setEventStatus] = useState("");
+  const [savedEvents, setSavedEvents] = useState([]);
+  const [loadingEvents, setLoadingEvents] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [loadingSavedSchedule, setLoadingSavedSchedule] = useState(false);
@@ -124,6 +132,26 @@ function App() {
 
   const [scheduleFailure, setScheduleFailure] = useState("");
   const [diagnostics, setDiagnostics] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    fetchSavedEvents()
+      .then((events) => {
+        if (!cancelled) {
+          setSavedEvents(events);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.warn("Could not load the saved event list:", error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function clearFeedback() {
     setApiError("");
@@ -264,6 +292,38 @@ function App() {
     );
   }
 
+  async function handleRefreshSavedEvents({ silent = false } = {}) {
+    if (!silent) {
+      setLoadingEvents(true);
+      setApiError("");
+      setApiMessage("");
+      setApiMessageTitle("");
+    }
+
+    try {
+      const events = await fetchSavedEvents();
+      setSavedEvents(events);
+
+      if (!silent) {
+        setApiMessageTitle("Saved events refreshed");
+        setApiMessage(`Loaded ${events.length} saved recruitment event(s).`);
+      }
+    } catch (error) {
+      if (!silent) {
+        setApiError(
+          error.message ||
+            "Could not load saved events. Check that the backend is running at localhost:5000."
+        );
+      } else {
+        console.warn("Could not refresh the saved event list:", error);
+      }
+    } finally {
+      if (!silent) {
+        setLoadingEvents(false);
+      }
+    }
+  }
+
   async function handleGenerateSchedule() {
     clearFeedback();
 
@@ -401,9 +461,7 @@ function App() {
       availableSlots: parseList(item.availableSlotsText),
       ...(item.maxInterviewsPerDay.trim() !== ""
         ? {
-            maxInterviewsPerDay: Number(
-              item.maxInterviewsPerDay
-            ),
+            maxInterviewsPerDay: Number(item.maxInterviewsPerDay),
           }
         : {}),
     }));
@@ -452,6 +510,7 @@ function App() {
         if (eventId) {
           setSavedEventId(eventId);
           localStorage.setItem("chronosLastSavedEventId", eventId);
+          void handleRefreshSavedEvents({ silent: true });
         }
 
         let scheduleToDisplay = data.schedule || [];
@@ -492,7 +551,6 @@ function App() {
         return;
       }
 
-      // Scheduling failures are different from connection failures.
       setScheduleFailure(
         data.reason || "No complete schedule could be generated."
       );
@@ -501,8 +559,6 @@ function App() {
         Array.isArray(data.diagnostics) ? data.diagnostics : []
       );
 
-      // Show an ordinary API error only when the server did not
-      // provide constraint diagnostics.
       if (!Array.isArray(data.diagnostics) || data.diagnostics.length === 0) {
         setApiError(
           data.error ||
@@ -555,15 +611,25 @@ function App() {
       }
 
       setEventStatus(data.event?.status || "published");
+
       setGeneratedSchedule((current) =>
-        current.map((interview) => ({ ...interview, status: "published" }))
+        current.map((interview) => ({
+          ...interview,
+          status: "published",
+        }))
       );
+
       setApiMessageTitle(
-        data.alreadyPublished ? "Schedule already published" : "Schedule published"
+        data.alreadyPublished
+          ? "Schedule already published"
+          : "Schedule published"
       );
+
       setApiMessage(
         `Published ${data.publishedInterviews ?? generatedSchedule.length} interview(s) for ${data.event?.eventName || eventName}.`
       );
+
+      void handleRefreshSavedEvents({ silent: true });
     } catch (error) {
       setApiError(
         "Could not connect to Chronos. Check that the backend is running at localhost:5000."
@@ -610,6 +676,7 @@ function App() {
       const loadedEventId = data.event?.eventId || eventId;
       const loadedEventName =
         data.event?.eventName || "Chronos Recruitment Event";
+
       const loadedEventDate = data.event?.eventDate
         ? String(data.event.eventDate).slice(0, 10)
         : "";
@@ -1176,17 +1243,66 @@ function App() {
               <div>
                 <h3>Saved schedules</h3>
                 <p>
-                  Load a previously saved schedule from PostgreSQL using its event ID.
+                  Choose a saved recruitment event or paste its ID to load the schedule from PostgreSQL.
                 </p>
               </div>
             </div>
 
             <label className="form-field">
-              <span>Saved event ID</span>
+              <span>Select a saved event</span>
+              <select
+                value={
+                  savedEvents.some((item) => item.eventId === savedEventId)
+                    ? savedEventId
+                    : ""
+                }
+                onChange={(event) => {
+                  setSavedEventId(event.target.value);
+                  setGeneratedSchedule([]);
+                  setEventStatus("");
+                  setScheduleViewTitle("Generated interview schedule");
+                  setApiError("");
+                  setApiMessage("");
+                  setApiMessageTitle("");
+                  setScheduleFailure("");
+                  setDiagnostics([]);
+                }}
+                disabled={loadingEvents}
+              >
+                <option value="">Choose an event...</option>
+                {savedEvents.map((item) => (
+                  <option key={item.eventId} value={item.eventId}>
+                    {item.eventName} — {item.eventDate} — {String(item.status).toUpperCase()} — {item.interviewCount} interview(s)
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              className="add-button"
+              onClick={() => handleRefreshSavedEvents()}
+              disabled={loadingEvents || loading || loadingSavedSchedule}
+            >
+              {loadingEvents
+                ? "Refreshing event list..."
+                : "Refresh saved events"}
+            </button>
+
+            <label className="form-field">
+              <span>Saved event ID (or paste an ID manually)</span>
               <input
                 type="text"
                 value={savedEventId}
-                onChange={(event) => setSavedEventId(event.target.value)}
+                onChange={(event) => {
+                  setSavedEventId(event.target.value);
+                  setGeneratedSchedule([]);
+                  setEventStatus("");
+                  setScheduleViewTitle("Generated interview schedule");
+                  setApiError("");
+                  setApiMessage("");
+                  setApiMessageTitle("");
+                }}
                 placeholder="Paste a saved event ID"
                 autoComplete="off"
               />
@@ -1261,6 +1377,7 @@ function App() {
                   <p className="section-kicker">SCHEDULER OUTPUT</p>
                   <h3>{scheduleViewTitle}</h3>
                 </div>
+
                 <span>
                   {generatedSchedule.length} interviews
                   {eventStatus ? ` · ${eventStatus.toUpperCase()}` : ""}
@@ -1272,9 +1389,15 @@ function App() {
                   type="button"
                   className="add-button"
                   onClick={handlePublishSchedule}
-                  disabled={loading || loadingSavedSchedule || publishingSchedule}
+                  disabled={
+                    loading ||
+                    loadingSavedSchedule ||
+                    publishingSchedule
+                  }
                 >
-                  {publishingSchedule ? "Publishing schedule..." : "Publish schedule"}
+                  {publishingSchedule
+                    ? "Publishing schedule..."
+                    : "Publish schedule"}
                 </button>
               )}
 
@@ -1301,7 +1424,9 @@ function App() {
 
                       <p>
                         Candidate:{" "}
-                        {candidate?.name || item.candidateName || item.candidateId}
+                        {candidate?.name ||
+                          item.candidateName ||
+                          item.candidateId}
                       </p>
 
                       <p>Interviewer: {item.interviewerName}</p>

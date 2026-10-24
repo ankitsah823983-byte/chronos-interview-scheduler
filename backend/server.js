@@ -1,4 +1,3 @@
-
 const express = require("express");
 const cors = require("cors");
 
@@ -37,6 +36,44 @@ app.get("/api/health", (req, res) => {
     status: "ok",
     message: "Chronos backend is running.",
   });
+});
+
+// List saved events for the coordinator workspace.
+app.get("/api/events", async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         e.event_id AS "eventId",
+         e.event_name AS "eventName",
+         to_char(e.event_date, 'YYYY-MM-DD') AS "eventDate",
+         e.status,
+         e.created_at AS "createdAt",
+         COUNT(si.schedule_id)::int AS "interviewCount"
+       FROM recruitment_events e
+       LEFT JOIN scheduled_interviews si
+         ON si.event_id = e.event_id
+       GROUP BY
+         e.event_id,
+         e.event_name,
+         e.event_date,
+         e.status,
+         e.created_at
+       ORDER BY e.created_at DESC, e.event_id DESC`
+    );
+
+    return res.json({
+      success: true,
+      events: result.rows,
+      total: result.rowCount,
+    });
+  } catch (error) {
+    console.error("Failed to list events:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: "Could not retrieve recruitment events.",
+    });
+  }
 });
 
 // Generate a schedule and save the run transactionally.

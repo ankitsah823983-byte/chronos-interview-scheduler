@@ -11,7 +11,6 @@ function makePayload() {
     eventName: "Chronos API Test Event",
     eventDate: TEST_EVENT_DATE,
     timeSlots,
-
     candidates: [
       {
         id: "c1",
@@ -24,7 +23,6 @@ function makePayload() {
         availableSlots: [...timeSlots],
       },
     ],
-
     interviewers: [
       {
         id: "i1",
@@ -34,7 +32,6 @@ function makePayload() {
         maxInterviewsPerDay: 2,
       },
     ],
-
     rooms: [
       {
         id: "r1",
@@ -42,7 +39,6 @@ function makePayload() {
         availableSlots: [...timeSlots],
       },
     ],
-
     tasks: [
       {
         id: "t1",
@@ -116,7 +112,7 @@ async function postPublish(eventId) {
   return { response, body };
 }
 
-// 1. Generate and persist a valid draft schedule.
+// 1. Generate and persist a draft schedule.
 async function testSuccessfulGeneration() {
   const { response, body } = await postSchedule(makePayload());
 
@@ -130,7 +126,7 @@ async function testSuccessfulGeneration() {
   savedEventId = body.persistence.eventId;
 }
 
-// 2. Reject missing required arrays.
+// 2. Reject missing arrays.
 async function testMissingArrays() {
   const { response, body } = await postSchedule({
     timeSlots: [],
@@ -141,7 +137,7 @@ async function testMissingArrays() {
   assert.match(body.error, /fields must be arrays/i);
 }
 
-// 3. Reject empty scheduling arrays.
+// 3. Reject empty arrays.
 async function testEmptyArrays() {
   const payload = makePayload();
   payload.tasks = [];
@@ -153,7 +149,7 @@ async function testEmptyArrays() {
   assert.match(body.error, /at least one item/i);
 }
 
-// 4. Reject invalid time formatting.
+// 4. Reject invalid time format.
 async function testInvalidTime() {
   const payload = makePayload();
   payload.timeSlots = ["25:00"];
@@ -187,7 +183,7 @@ async function testImpossibleDate() {
   assert.match(body.error, /valid date/i);
 }
 
-// 7. An infeasible scheduling run must not be publishable.
+// 7. An infeasible schedule must not be publishable.
 async function testInfeasibleSchedule() {
   const payload = makePayload();
   payload.timeSlots = ["10:00"];
@@ -222,9 +218,32 @@ async function testInfeasibleSchedule() {
   infeasibleEventId = body.persistence.eventId;
 }
 
-// 8. Retrieve persisted event metadata.
-async function testRetrieveEventMetadata() {
+// 8. Event list endpoint returns saved event metadata.
+async function testListSavedEvents() {
   assert.ok(savedEventId, "A successful schedule must create an event");
+
+  const response = await fetch(`${BASE_URL}/api/events`);
+  const body = await response.json();
+
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(body.success, true);
+  assert.ok(Array.isArray(body.events));
+  assert.equal(body.total, body.events.length);
+
+  const event = body.events.find(
+    (item) => item.eventId === savedEventId
+  );
+
+  assert.ok(event, "The newly saved event should appear in the event list");
+  assert.equal(event.eventName, "Chronos API Test Event");
+  assert.equal(event.eventDate, TEST_EVENT_DATE);
+  assert.equal(event.status, "draft");
+  assert.equal(event.interviewCount, 2);
+}
+
+// 9. Retrieve persisted event metadata.
+async function testRetrieveEventMetadata() {
+  assert.ok(savedEventId);
 
   const { response, body } = await getSchedule(savedEventId);
 
@@ -237,7 +256,7 @@ async function testRetrieveEventMetadata() {
   assert.equal(body.savedInterviews, 2);
 }
 
-// 9. Verify persisted interview details and unique IDs.
+// 10. Retrieve interview details and unique IDs.
 async function testRetrieveInterviewDetails() {
   const { response, body } = await getSchedule(savedEventId);
 
@@ -257,7 +276,7 @@ async function testRetrieveInterviewDetails() {
     assert.ok(interview.candidateName);
     assert.ok(interview.roundName);
     assert.equal(interview.interviewerName, "Interviewer X");
-    assert.deepEqual(interview.interviewerIds.length, 1);
+    assert.equal(interview.interviewerIds.length, 1);
     assert.equal(interview.roomName, "Room 1");
     assert.ok(interview.startTime);
     assert.ok(interview.endTime);
@@ -265,7 +284,7 @@ async function testRetrieveInterviewDetails() {
   }
 }
 
-// 10. Unknown event lookup returns 404.
+// 11. Unknown schedule returns 404.
 async function testUnknownEvent() {
   const unknownId = "11111111-1111-4111-8111-111111111111";
   const { response, body } = await getSchedule(unknownId);
@@ -274,7 +293,7 @@ async function testUnknownEvent() {
   assert.equal(body.success, false);
 }
 
-// 11. A malformed UUID must be rejected.
+// 12. Malformed publish UUID returns 400.
 async function testInvalidPublishId() {
   const { response, body } = await postPublish("not-a-uuid");
 
@@ -283,9 +302,9 @@ async function testInvalidPublishId() {
   assert.match(body.error, /valid UUID/i);
 }
 
-// 12. An event with no saved interviews cannot be published.
+// 13. Event without saved interviews cannot be published.
 async function testPublishEmptyEvent() {
-  assert.ok(infeasibleEventId, "The infeasible test must create an event");
+  assert.ok(infeasibleEventId);
 
   const { response, body } = await postPublish(infeasibleEventId);
 
@@ -297,10 +316,8 @@ async function testPublishEmptyEvent() {
   assert.equal(eventBody.event.status, "draft");
 }
 
-// 13. Publish a complete draft schedule.
+// 14. Publish a valid draft schedule.
 async function testPublishValidEvent() {
-  assert.ok(savedEventId, "A saved event ID is required");
-
   const { response, body } = await postPublish(savedEventId);
 
   assert.equal(response.status, 200, JSON.stringify(body));
@@ -310,7 +327,7 @@ async function testPublishValidEvent() {
   assert.equal(body.publishedInterviews, 2);
 }
 
-// 14. Published status must persist in the database.
+// 15. Published status persists in the database.
 async function testPublishedStatusPersists() {
   const { response, body } = await getSchedule(savedEventId);
 
@@ -323,7 +340,7 @@ async function testPublishedStatusPersists() {
   }
 }
 
-// 15. Publishing an already-published event must be safe.
+// 16. Repeated publishing is safe.
 async function testRepeatedPublish() {
   const { response, body } = await postPublish(savedEventId);
 
@@ -333,7 +350,7 @@ async function testRepeatedPublish() {
   assert.equal(body.publishedInterviews, 2);
 }
 
-// 16. Publishing a nonexistent event returns 404.
+// 17. Publishing an unknown event returns 404.
 async function testPublishUnknownEvent() {
   const unknownId = "22222222-2222-4222-8222-222222222222";
   const { response, body } = await postPublish(unknownId);
@@ -344,7 +361,7 @@ async function testPublishUnknownEvent() {
 }
 
 async function main() {
-  console.log("Chronos API and publish workflow tests\n");
+  console.log("Chronos API and coordinator workflow tests\n");
 
   await test("Generates and persists a valid draft schedule", testSuccessfulGeneration);
   await test("Rejects missing scheduling arrays", testMissingArrays);
@@ -353,8 +370,9 @@ async function main() {
   await test("Rejects a missing event date", testMissingEventDate);
   await test("Rejects an impossible calendar date", testImpossibleDate);
   await test("Returns 422 for an infeasible schedule", testInfeasibleSchedule);
-  await test("Retrieves the persisted event metadata", testRetrieveEventMetadata);
-  await test("Retrieves interview details and unique interview IDs", testRetrieveInterviewDetails);
+  await test("Lists saved events with their metadata and interview counts", testListSavedEvents);
+  await test("Retrieves persisted event metadata", testRetrieveEventMetadata);
+  await test("Retrieves interview details and unique IDs", testRetrieveInterviewDetails);
   await test("Returns 404 for an unknown event", testUnknownEvent);
   await test("Rejects an invalid publish UUID", testInvalidPublishId);
   await test("Rejects publishing an event with no interviews", testPublishEmptyEvent);
