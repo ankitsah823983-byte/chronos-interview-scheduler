@@ -1,21 +1,67 @@
 
 const express = require("express");
 const cors = require("cors");
+const session = require("express-session");
+const connectPgSimple = require("connect-pg-simple");
 
 const pool = require("./db");
+const authRouter = require("./auth");
 const { generateSchedule } = require("./scheduler");
 const { persistScheduleRun } = require("./persistence");
 
 const app = express();
 const PORT = 5000;
 
+const sessionSecret = process.env.SESSION_SECRET;
+
+if (typeof sessionSecret !== "string" || sessionSecret.length < 32) {
+  console.error(
+    "SESSION_SECRET is missing or too short. Configure it in backend/.env."
+  );
+  process.exit(1);
+}
+
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
+
 app.use(
   cors({
     origin: "http://localhost:5173",
+    credentials: true,
   })
 );
 
 app.use(express.json({ limit: "1mb" }));
+
+const PgSessionStore = connectPgSimple(session);
+
+const sessionStore = new PgSessionStore({
+  pool,
+  tableName: "user_sessions",
+  createTableIfMissing: true,
+});
+
+app.use(
+  session({
+    name: "chronos.sid",
+    secret: sessionSecret,
+    store: sessionStore,
+    resave: false,
+    saveUninitialized: false,
+    rolling: true,
+    cookie: {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 8 * 60 * 60 * 1000,
+      path: "/",
+    },
+  })
+);
+
+// Authentication routes: registration, login, identity and logout.
+app.use("/api/auth", authRouter);
 
 function isValidUuid(value) {
   return (
@@ -55,7 +101,7 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// Create a draft recruitment event independently of schedule generation.
+// Create an independent draft event.
 app.post("/api/events", async (req, res) => {
   const { eventName, eventDate } = req.body || {};
 
@@ -104,7 +150,7 @@ app.post("/api/events", async (req, res) => {
   }
 });
 
-// List events for the coordinator workspace.
+// List saved events for the coordinator workspace.
 app.get("/api/events", async (req, res) => {
   try {
     const result = await pool.query(
@@ -273,7 +319,7 @@ app.post("/api/schedule", async (req, res) => {
   }
 });
 
-// Retrieve an event, its saved interviews, and its full configuration.
+// Retrieve an event, saved interviews, and its full configuration.
 app.get("/api/schedules/:eventId", async (req, res) => {
   const { eventId } = req.params;
 
