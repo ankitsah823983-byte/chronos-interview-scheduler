@@ -1,6 +1,7 @@
 
 const express = require("express");
 const bcrypt = require("bcryptjs");
+const { createHash } = require("node:crypto");
 const pool = require("./db");
 
 const router = express.Router();
@@ -80,7 +81,7 @@ function destroySession(req) {
 }
 
 // Public registration creates candidate accounts only.
-// Coordinator and interviewer accounts require a trusted provisioning flow.
+// Existing candidate/interviewer profiles must be claimed through invitations.
 router.post("/register", async (req, res) => {
   const { fullName, email: suppliedEmail, password, role } =
     req.body || {};
@@ -117,7 +118,6 @@ router.post("/register", async (req, res) => {
     client = await pool.connect();
     await client.query("BEGIN");
 
-    // Do not silently let a public registration claim an existing profile.
     const existingAccount = await client.query(
       `SELECT user_id
        FROM user_accounts
@@ -193,10 +193,7 @@ router.post("/register", async (req, res) => {
       try {
         await client.query("ROLLBACK");
       } catch (rollbackError) {
-        console.error(
-          "Registration rollback failed:",
-          rollbackError.message
-        );
+        console.error("Registration rollback failed:", rollbackError.message);
       }
     }
 
@@ -220,7 +217,7 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// Authenticate credentials and establish a fresh server-side session.
+// Log in and establish a fresh server-side session.
 router.post("/login", async (req, res) => {
   const { email: suppliedEmail, password } = req.body || {};
 
@@ -254,10 +251,7 @@ router.post("/login", async (req, res) => {
       [normalizedEmail]
     );
 
-    if (
-      result.rowCount === 0 ||
-      !result.rows[0].isActive
-    ) {
+    if (result.rowCount === 0 || !result.rows[0].isActive) {
       return res.status(401).json({
         success: false,
         error: "Invalid email or password.",
@@ -279,9 +273,7 @@ router.post("/login", async (req, res) => {
 
     await regenerateSession(req);
 
-    // Store the user ID only; reload current role and active status from DB.
     req.session.userId = account.userId;
-
     await saveSession(req);
 
     return res.json({
@@ -298,7 +290,226 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// Return the current authenticated identity, if the account is still active.
+// Redeem a one-time invitation and link the account to the existing profile.
+// POST /api/auth/redeem-invitation
+router.post("/redeem-invitation", async (req, res) => {
+  const { token, password } = req.body || {};
+
+  if (
+    typeof token !== "string" ||
+    !/^[A-Za-z0-9_-]{40,60}$/.test(token) ||
+    !isValidPassword(password)
+  ) {
+    return res.status(400).json({
+      success: false,
+      error:
+        "Provide a valid invitation token and a password of 12–72 UTF-8 bytes.",
+    });
+  }
+
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+
+  let client;
+
+  try {
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    // Locking the invitation makes redemption single-use under concurrency.
+    const invitationResult = await client.query(
+      `SELECT
+         invitation_id AS "invitationId",
+         email,
+         role,
+         candidate_id AS "candidateId",
+         interviewer_id AS "interviewerId",
+         expires_at AS "expiresAt",
+         redeemed_at AS "redeemedAt",
+         revoked_at AS "revokedAt"
+       FROM account_invitations
+       WHERE token_hash = $1
+       FOR UPDATE`,
+      [tokenHash]
+    );
+
+    if (invitationResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        success: false,
+        error: "Invalid invitation token.",
+      });
+    }
+
+    const invitation = invitationResult.rows[0];
+
+    if (
+      invitation.redeemedAt ||
+      invitation.revokedAt ||
+      new Date(invitation.expiresAt).getTime() <= Date.now()
+    ) {
+      await client.query("ROLLBACK");
+
+      return res.status(410).json({
+        success: false,
+        error: "This invitation has expired, been revoked or already used.",
+      });
+    }
+
+    let profileResult;
+
+    if (invitation.role === "candidate") {
+      profileResult = await client.query(
+        `SELECT
+           candidate_id AS id,
+           full_name AS "fullName",
+           lower(trim(email)) AS email
+         FROM candidates
+         WHERE candidate_id = $1
+         FOR UPDATE`,
+        [invitation.candidateId]
+      );
+    } else if (invitation.role === "interviewer") {
+      profileResult = await client.query(
+        `SELECT
+           interviewer_id AS id,
+           full_name AS "fullName",
+           lower(trim(email)) AS email
+         FROM interviewers
+         WHERE interviewer_id = $1
+         FOR UPDATE`,
+        [invitation.interviewerId]
+      );
+    } else {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        success: false,
+        error: "This invitation has an unsupported role.",
+      });
+    }
+
+    if (profileResult.rowCount === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        success: false,
+        error: "The invited profile no longer exists.",
+      });
+    }
+
+    const profile = profileResult.rows[0];
+
+    // Do not let a previously issued invitation claim a profile whose email
+    // has changed since the invitation was created.
+    if (profile.email !== invitation.email) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        success: false,
+        error:
+          "The profile email has changed. Ask the coordinator for a new invitation.",
+      });
+    }
+
+    const existingAccountResult = await client.query(
+      `SELECT user_id
+       FROM user_accounts
+       WHERE lower(trim(email)) = $1
+          OR ($2::uuid IS NOT NULL AND candidate_id = $2)
+          OR ($3::uuid IS NOT NULL AND interviewer_id = $3)
+       LIMIT 1`,
+      [
+        invitation.email,
+        invitation.role === "candidate" ? invitation.candidateId : null,
+        invitation.role === "interviewer" ? invitation.interviewerId : null,
+      ]
+    );
+
+    if (existingAccountResult.rowCount > 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        success: false,
+        error: "This profile or email already has an account.",
+      });
+    }
+
+    const accountResult = await client.query(
+      `INSERT INTO user_accounts
+         (
+           full_name,
+           email,
+           password_hash,
+           role,
+           candidate_id,
+           interviewer_id
+         )
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING
+         user_id AS "userId",
+         full_name AS "fullName",
+         email,
+         role,
+         candidate_id AS "candidateId",
+         interviewer_id AS "interviewerId"`,
+      [
+        profile.fullName,
+        invitation.email,
+        passwordHash,
+        invitation.role,
+        invitation.role === "candidate" ? invitation.candidateId : null,
+        invitation.role === "interviewer" ? invitation.interviewerId : null,
+      ]
+    );
+
+    await client.query(
+      `UPDATE account_invitations
+       SET redeemed_at = now()
+       WHERE invitation_id = $1`,
+      [invitation.invitationId]
+    );
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      success: true,
+      user: publicUser(accountResult.rows[0]),
+    });
+  } catch (error) {
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "Invitation redemption rollback failed:",
+          rollbackError.message
+        );
+      }
+    }
+
+    if (error.code === "23505") {
+      return res.status(409).json({
+        success: false,
+        error: "This profile or email already has an account.",
+      });
+    }
+
+    console.error("Invitation redemption failed:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: "Could not redeem the invitation.",
+    });
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+});
+
+// Return the current authenticated identity, if still active.
 router.get("/me", async (req, res) => {
   const userId = req.session?.userId;
 
@@ -324,10 +535,7 @@ router.get("/me", async (req, res) => {
       [userId]
     );
 
-    if (
-      result.rowCount === 0 ||
-      !result.rows[0].isActive
-    ) {
+    if (result.rowCount === 0 || !result.rows[0].isActive) {
       await destroySession(req);
 
       return res.status(401).json({

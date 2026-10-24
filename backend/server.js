@@ -6,6 +6,7 @@ const connectPgSimple = require("connect-pg-simple");
 
 const pool = require("./db");
 const authRouter = require("./auth");
+const invitationsRouter = require("./invitations");
 const { requireAuth, requireRole } = require("./auth-middleware");
 const { generateSchedule } = require("./scheduler");
 const { persistScheduleRun } = require("./persistence");
@@ -63,6 +64,14 @@ app.use(
 
 // Public authentication endpoints.
 app.use("/api/auth", authRouter);
+
+// Verify login and role against PostgreSQL on every protected request.
+app.use(
+  "/api/invitations",
+  requireAuth,
+  requireRole("coordinator"),
+  invitationsRouter
+);
 
 function isValidUuid(value) {
   return (
@@ -336,7 +345,7 @@ app.post(
   }
 );
 
-// COORDINATOR ONLY: load event details, configuration and interviews.
+// COORDINATOR ONLY: load an event and its configuration.
 app.get(
   "/api/schedules/:eventId",
   requireAuth,
