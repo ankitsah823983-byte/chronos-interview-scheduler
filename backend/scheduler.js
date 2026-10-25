@@ -1,3 +1,4 @@
+
 function generateSchedule({
   timeSlots,
   candidates,
@@ -5,6 +6,7 @@ function generateSchedule({
   rooms,
   tasks,
   maxSearchNodes = 50000,
+  maxSolutions = 1,
 }) {
   if (
     !Array.isArray(timeSlots) ||
@@ -18,6 +20,10 @@ function generateSchedule({
 
   if (!Number.isInteger(maxSearchNodes) || maxSearchNodes < 1) {
     throw new Error("Search limit must be a positive integer.");
+  }
+
+  if (!Number.isInteger(maxSolutions) || maxSolutions < 1) {
+    throw new Error("Solution limit must be a positive integer.");
   }
 
   const toMinutes = (time) => {
@@ -155,6 +161,7 @@ function generateSchedule({
 
   const interviewerWorkload = new Map();
   const assigned = new Map();
+  const solutions = [];
 
   const stats = {
     nodesVisited: 0,
@@ -597,10 +604,21 @@ function generateSchedule({
     return null;
   }
 
+  function snapshotSchedule() {
+    return tasks.map(({ id }) => {
+      const { blocks, ...appointment } = assigned.get(id);
+      return { ...appointment };
+    });
+  }
+
   // Backtracking search using the Minimum Remaining Values heuristic.
+  // By default it stops after the first valid schedule. If maxSolutions is
+  // greater than one, it collects a bounded number of valid schedules while
+  // correctly releasing reserved resources after every explored branch.
   function search() {
     if (assigned.size === tasks.length) {
-      return true;
+      solutions.push(snapshotSchedule());
+      return tasks.length === 0 || solutions.length >= maxSolutions;
     }
 
     if (stats.nodesVisited >= maxSearchNodes) {
@@ -666,11 +684,9 @@ function generateSchedule({
         (interviewerWorkload.get(option.interviewerId) || 0) + 1
       );
 
-      if (search()) {
-        return true;
-      }
+      const shouldStop = search();
 
-      // Undo this choice and try another assignment.
+      // Always undo this choice, even after recording a complete solution.
       assigned.delete(chosenTask.id);
 
       release(
@@ -696,15 +712,16 @@ function generateSchedule({
         interviewerWorkload.get(option.interviewerId) - 1
       );
 
-      if (stats.searchLimitReached) {
-        return false;
+      if (shouldStop || stats.searchLimitReached) {
+        return shouldStop;
       }
     }
 
     return false;
   }
 
-  const success = search();
+  search();
+  const success = solutions.length > 0;
 
   if (!success) {
     const workloadDiagnostic = stats.searchLimitReached
@@ -735,12 +752,9 @@ function generateSchedule({
     };
   }
 
-  const schedule = tasks.map(({ id }) => {
-    const { blocks, ...appointment } = assigned.get(id);
-    return appointment;
-  });
+  const schedule = solutions[0];
 
-  return {
+  const result = {
     success: true,
     schedule,
     unscheduledTasks: [],
@@ -748,6 +762,49 @@ function generateSchedule({
     diagnostics: [],
     stats,
   };
+
+  // Preserve the existing result shape for callers using the default mode.
+  // Multiple-option mode exposes unique choices per task sourced from
+  // complete valid schedules found by the search.
+  if (maxSolutions > 1) {
+    const optionsByTask = new Map(
+      tasks.map((task) => [
+        task.id,
+        { taskId: task.id, options: [], seen: new Set() },
+      ])
+    );
+
+    for (const foundSchedule of solutions) {
+      for (const option of foundSchedule) {
+        const group = optionsByTask.get(option.taskId);
+        const key = JSON.stringify([
+          option.startTime,
+          option.endTime,
+          option.interviewerId,
+          option.roomId,
+        ]);
+
+        if (!group.seen.has(key)) {
+          group.seen.add(key);
+          group.options.push({ ...option });
+        }
+      }
+    }
+
+    const solutionLimitReached = solutions.length >= maxSolutions;
+
+    result.taskOptions = tasks.map((task) => {
+      const { taskId, options } = optionsByTask.get(task.id);
+      return { taskId, options };
+    });
+
+    result.solutionsFound = solutions.length;
+
+    result.optionSearchComplete =
+      !stats.searchLimitReached && !solutionLimitReached;
+  }
+
+  return result;
 }
 
 module.exports = { generateSchedule };

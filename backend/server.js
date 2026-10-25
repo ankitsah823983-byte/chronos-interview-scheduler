@@ -331,12 +331,13 @@ app.post(
 
     try {
       result = generateSchedule({
-        timeSlots,
-        candidates,
-        interviewers: effectiveInterviewers,
-        rooms,
-        tasks,
-      });
+  timeSlots,
+  candidates,
+  interviewers: effectiveInterviewers,
+  rooms,
+  tasks,
+  maxSolutions: 20,
+});
     } catch (error) {
       return res.status(400).json({
         success: false,
@@ -381,6 +382,15 @@ app.post(
         });
       }
 
+      if (
+        error.code === "PROFILE_EMAIL_CONFLICT" ||
+        error.code === "PROFILE_EMAIL_LINKED"
+      ) {
+        return res.status(409).json({
+          success: false,
+          error: error.message,
+        });
+      }
       console.error("Failed to save scheduling run:", error);
 
       return res.status(500).json({
@@ -448,6 +458,7 @@ app.get(
           `SELECT
              c.candidate_id AS id,
              c.full_name AS name,
+             c.email AS email,
              COALESCE(
                (
                  SELECT array_agg(
@@ -472,6 +483,7 @@ app.get(
           `SELECT
              i.interviewer_id AS id,
              i.full_name AS name,
+             i.email AS email,
              COALESCE(
                (
                  SELECT array_agg(s.skill ORDER BY s.skill)

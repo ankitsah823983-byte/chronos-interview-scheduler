@@ -411,6 +411,198 @@ test("Lists the booked status after successful booking", async () => {
   assert.equal(body.interviews[0].bookingStatus, "booked");
 });
 
+
+test("Rejects overlapping booking with an already-booked interviewer", async () => {
+  const originalResult = await pool.query(
+    `SELECT
+       to_char(start_time, 'HH24:MI') AS "startTime",
+       to_char(end_time, 'HH24:MI') AS "endTime"
+     FROM scheduled_interviews
+     WHERE schedule_id = $1`,
+    [candidateBScheduleId]
+  );
+
+  assert.equal(originalResult.rowCount, 1);
+
+  const original = originalResult.rows[0];
+
+  try {
+    // Temporarily make Candidate B overlap Candidate A's confirmed
+    // interview while retaining the same interviewer.
+    await pool.query(
+      `UPDATE scheduled_interviews
+       SET start_time = '10:00'::time,
+           end_time = '10:30'::time,
+           status = 'published'
+       WHERE schedule_id = $1`,
+      [candidateBScheduleId]
+    );
+
+    const { response, body } = await request(
+      `/candidate/interviews/${candidateBScheduleId}/book`,
+      { method: "POST" },
+      candidateBCookie
+    );
+
+    assert.equal(response.status, 409, JSON.stringify(body));
+    assert.match(body.error, /conflict|another confirmed interview|time/i);
+  } finally {
+    // Restore the fixture for the remaining tests.
+    await pool.query(
+      `UPDATE scheduled_interviews
+       SET start_time = $2::time,
+           end_time = $3::time,
+           status = 'published'
+       WHERE schedule_id = $1`,
+      [
+        candidateBScheduleId,
+        original.startTime,
+        original.endTime,
+      ]
+    );
+  }
+});
+
+test("Rejects overlapping booking when the room is already booked", async () => {
+  const candidateBResult = await pool.query(
+    `SELECT
+       room_id AS "roomId",
+       to_char(start_time, 'HH24:MI') AS "startTime",
+       to_char(end_time, 'HH24:MI') AS "endTime"
+     FROM scheduled_interviews
+     WHERE schedule_id = $1`,
+    [candidateBScheduleId]
+  );
+
+  const candidateAResult = await pool.query(
+    `SELECT room_id AS "roomId"
+     FROM scheduled_interviews
+     WHERE schedule_id = $1`,
+    [candidateAScheduleId]
+  );
+
+  assert.equal(candidateBResult.rowCount, 1);
+  assert.equal(candidateAResult.rowCount, 1);
+
+  const original = candidateBResult.rows[0];
+  const bookedRoomId = candidateAResult.rows[0].roomId;
+
+  let temporaryInterviewerId = null;
+
+  try {
+    const interviewerResult = await pool.query(
+      `INSERT INTO interviewers (full_name, email)
+       VALUES ($1, $2)
+       RETURNING interviewer_id`,
+      [
+        "Temporary Room Conflict Interviewer",
+        `room-conflict-${suffix}@example.test`,
+      ]
+    );
+
+    temporaryInterviewerId =
+      interviewerResult.rows[0].interviewer_id;
+
+    await pool.query(
+      `INSERT INTO event_interviewers
+         (event_id, interviewer_id, max_interviews_per_day)
+       VALUES ($1, $2, 2)
+       ON CONFLICT (event_id, interviewer_id) DO NOTHING`,
+      [publishedEventId, temporaryInterviewerId]
+    );
+
+    // Reuse Candidate A's room and time, but assign a different
+    // interviewer so this test specifically isolates the room conflict.
+    await pool.query(
+      `UPDATE scheduled_interviews
+       SET room_id = $2,
+           start_time = '10:00'::time,
+           end_time = '10:30'::time,
+           status = 'published'
+       WHERE schedule_id = $1`,
+      [candidateBScheduleId, bookedRoomId]
+    );
+
+    await pool.query(
+      `DELETE FROM scheduled_interview_interviewers
+       WHERE event_id = $1
+         AND schedule_id = $2`,
+      [publishedEventId, candidateBScheduleId]
+    );
+
+    await pool.query(
+      `INSERT INTO scheduled_interview_interviewers
+         (event_id, schedule_id, interviewer_id)
+       VALUES ($1, $2, $3)`,
+      [
+        publishedEventId,
+        candidateBScheduleId,
+        temporaryInterviewerId,
+      ]
+    );
+
+    const { response, body } = await request(
+      `/candidate/interviews/${candidateBScheduleId}/book`,
+      { method: "POST" },
+      candidateBCookie
+    );
+
+    assert.equal(response.status, 409, JSON.stringify(body));
+    assert.match(body.error, /conflict|another confirmed interview|time/i);
+  } finally {
+    // Restore the original slot and room even if an assertion fails.
+    await pool.query(
+      `UPDATE scheduled_interviews
+       SET room_id = $2,
+           start_time = $3::time,
+           end_time = $4::time,
+           status = 'published'
+       WHERE schedule_id = $1`,
+      [
+        candidateBScheduleId,
+        original.roomId,
+        original.startTime,
+        original.endTime,
+      ]
+    );
+
+    await pool.query(
+      `DELETE FROM scheduled_interview_interviewers
+       WHERE event_id = $1
+         AND schedule_id = $2`,
+      [publishedEventId, candidateBScheduleId]
+    );
+
+    await pool.query(
+      `INSERT INTO scheduled_interview_interviewers
+         (event_id, schedule_id, interviewer_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT DO NOTHING`,
+      [
+        publishedEventId,
+        candidateBScheduleId,
+        interviewerId,
+      ]
+    );
+
+    if (temporaryInterviewerId) {
+      await pool.query(
+        `DELETE FROM event_interviewers
+         WHERE event_id = $1
+           AND interviewer_id = $2`,
+        [publishedEventId, temporaryInterviewerId]
+      );
+
+      await pool.query(
+        `DELETE FROM interviewers
+         WHERE interviewer_id = $1`,
+        [temporaryInterviewerId]
+      );
+    }
+  }
+});
+
+
 test("Allows only one of two simultaneous booking requests", async () => {
   const [first, second] = await Promise.all([
     request(

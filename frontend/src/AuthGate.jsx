@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import InterviewerDashboard from "./InterviewerDashboard";
 import CandidateDashboard from "./CandidateDashboard";
+import InvitationRedeem from "./InvitationRedeem";
 
 const API_URL = "http://localhost:5000";
 
@@ -17,10 +18,21 @@ export default function AuthGate({ children }) {
   const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState("");
 
+  // Invitation URLs will use: http://localhost:5173/?invite=TOKEN
+  const invitationToken =
+    new URLSearchParams(window.location.search).get("invite")?.trim() || "";
+
   useEffect(() => {
     let cancelled = false;
 
     async function checkSession() {
+      // An invitation recipient should see the password setup page,
+      // regardless of whether a different account has a current session.
+      if (invitationToken) {
+        setCheckingSession(false);
+        return;
+      }
+
       try {
         const response = await fetch(`${API_URL}/api/auth/me`, {
           credentials: "include",
@@ -57,7 +69,7 @@ export default function AuthGate({ children }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [invitationToken]);
 
   async function handleLogin(event) {
     event.preventDefault();
@@ -191,6 +203,11 @@ export default function AuthGate({ children }) {
     fontSize: "15px",
     cursor: "pointer",
   };
+
+  // Invitation redemption takes precedence over any existing session.
+  if (invitationToken) {
+    return <InvitationRedeem token={invitationToken} />;
+  }
 
   if (checkingSession) {
     return (

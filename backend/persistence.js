@@ -1,3 +1,4 @@
+
 const { randomUUID } = require("crypto");
 const pool = require("./db");
 
@@ -16,77 +17,176 @@ function isValidUuid(value) {
   );
 }
 
-async function resolveInterviewerProfile(client, interviewer) {
-  const name = interviewer.name?.trim() || interviewer.id;
+async function assertProfileEmailAvailable(client, role, profileId, email) {
+  if (!email) return;
 
-  const email =
-    typeof interviewer.email === "string" && interviewer.email.trim()
-      ? interviewer.email.trim()
+  const candidateId = role === "candidate" ? profileId : null;
+  const interviewerId = role === "interviewer" ? profileId : null;
+
+  const result = await client.query(
+    `SELECT 1
+     FROM candidates
+     WHERE lower(trim(email)) = $1
+       AND ($2::uuid IS NULL OR candidate_id <> $2)
+
+     UNION ALL
+
+     SELECT 1
+     FROM interviewers
+     WHERE lower(trim(email)) = $1
+       AND ($3::uuid IS NULL OR interviewer_id <> $3)
+
+     UNION ALL
+
+     SELECT 1
+     FROM user_accounts ua
+     WHERE lower(trim(ua.email)) = $1
+       AND NOT (
+         ($2::uuid IS NOT NULL AND ua.candidate_id = $2::uuid)
+         OR ($3::uuid IS NOT NULL AND ua.interviewer_id = $3::uuid)
+       )
+
+     LIMIT 1`,
+    [email, candidateId, interviewerId]
+  );
+
+  if (result.rowCount > 0) {
+    throw createPersistenceError(
+      "This email is already used by another profile or account. Use a different email.",
+      "PROFILE_EMAIL_CONFLICT"
+    );
+  }
+}
+
+async function resolveProfile(client, role, item) {
+  const isCandidate = role === "candidate";
+
+  const table = isCandidate ? "candidates" : "interviewers";
+  const idColumn = isCandidate ? "candidate_id" : "interviewer_id";
+  const accountColumn = idColumn;
+
+  const name = item.name?.trim() || item.id;
+
+  const suppliedEmail =
+    typeof item.email === "string" && item.email.trim()
+      ? item.email.trim().toLowerCase()
       : null;
 
-  // Saved event configuration contains the actual database UUID.
-  // Reuse it so account links and submissions remain attached.
-  const suppliedId = isValidUuid(interviewer.id) ? interviewer.id : null;
+  const suppliedId = isValidUuid(item.id) ? item.id : null;
 
+  let existing = null;
+
+  // Prefer the database ID from a previously saved event.
   if (suppliedId) {
-    const existingResult = await client.query(
-      `SELECT interviewer_id
-       FROM interviewers
-       WHERE interviewer_id = $1
+    const result = await client.query(
+      `SELECT
+         ${idColumn} AS id,
+         lower(trim(email)) AS email
+       FROM ${table}
+       WHERE ${idColumn} = $1
        FOR UPDATE`,
       [suppliedId]
     );
 
-    if (existingResult.rowCount > 0) {
-      await client.query(
-        `UPDATE interviewers
-         SET full_name = $2
-         WHERE interviewer_id = $1`,
-        [suppliedId, name]
-      );
-
-      return suppliedId;
+    if (result.rowCount > 0) {
+      existing = result.rows[0];
     }
   }
 
-  // If an email is supplied, try to reuse the matching existing profile.
-  if (email) {
-    const emailResult = await client.query(
-      `SELECT interviewer_id
-       FROM interviewers
-       WHERE lower(trim(email)) = lower(trim($1))
-       ORDER BY created_at, interviewer_id
-       LIMIT 1`,
-      [email]
+  // For new UI IDs, reuse a profile matching the normalized email.
+  if (!existing && suppliedEmail) {
+    const result = await client.query(
+      `SELECT
+         ${idColumn} AS id,
+         lower(trim(email)) AS email
+       FROM ${table}
+       WHERE lower(trim(email)) = $1
+       ORDER BY created_at, ${idColumn}
+       LIMIT 1
+       FOR UPDATE`,
+      [suppliedEmail]
     );
 
-    if (emailResult.rowCount > 0) {
-      const existingId = emailResult.rows[0].interviewer_id;
-
-      await client.query(
-        `UPDATE interviewers
-         SET full_name = $2
-         WHERE interviewer_id = $1`,
-        [existingId, name]
-      );
-
-      return existingId;
+    if (result.rowCount > 0) {
+      existing = result.rows[0];
     }
   }
 
-  // New interviewer: keep a supplied UUID when available, otherwise
-  // generate one. Existing database-backed UUIDs were handled above.
+  if (existing) {
+    const profileId = existing.id;
+
+    const accountResult = await client.query(
+      `SELECT lower(trim(email)) AS email
+       FROM user_accounts
+       WHERE ${accountColumn} = $1
+       LIMIT 1
+       FOR UPDATE`,
+      [profileId]
+    );
+
+    const linkedAccountEmail =
+      accountResult.rows[0]?.email || null;
+
+    // An empty form field means "keep the saved email", not "erase it".
+    const emailToSave =
+      suppliedEmail || existing.email || linkedAccountEmail || null;
+
+    // Never silently change a profile email while its login account
+    // remains linked to a different email address.
+    if (
+      linkedAccountEmail &&
+      emailToSave !== linkedAccountEmail
+    ) {
+      throw createPersistenceError(
+        "This profile is linked to a login account with another email. The account email must be updated through a dedicated account-management flow.",
+        "PROFILE_EMAIL_LINKED"
+      );
+    }
+
+    await assertProfileEmailAvailable(
+      client,
+      role,
+      profileId,
+      emailToSave
+    );
+
+    await client.query(
+      `UPDATE ${table}
+       SET full_name = $2,
+           email = $3
+       WHERE ${idColumn} = $1`,
+      [profileId, name, emailToSave]
+    );
+
+    return profileId;
+  }
+
   const newId = suppliedId || randomUUID();
 
-  const insertResult = await client.query(
-    `INSERT INTO interviewers
-       (interviewer_id, full_name, email)
-     VALUES ($1, $2, $3)
-     RETURNING interviewer_id`,
-    [newId, name, email]
+  await assertProfileEmailAvailable(
+    client,
+    role,
+    newId,
+    suppliedEmail
   );
 
-  return insertResult.rows[0].interviewer_id;
+  const insertResult = await client.query(
+    `INSERT INTO ${table}
+       (${idColumn}, full_name, email)
+     VALUES ($1, $2, $3)
+     RETURNING ${idColumn}`,
+    [newId, name, suppliedEmail]
+  );
+
+  return insertResult.rows[0][idColumn];
+}
+
+async function resolveCandidateProfile(client, candidate) {
+  return resolveProfile(client, "candidate", candidate);
+}
+
+async function resolveInterviewerProfile(client, interviewer) {
+  return resolveProfile(client, "interviewer", interviewer);
 }
 
 async function readSubmittedAvailabilityByInterviewerId(client, eventId) {
@@ -325,23 +425,7 @@ async function persistScheduleRun({ input, result }) {
 
     // Save candidates and event-specific candidate availability.
     for (const candidate of input.candidates) {
-      const name = candidate.name?.trim() || candidate.id;
-
-      const email =
-        typeof candidate.email === "string" && candidate.email.trim()
-          ? candidate.email.trim()
-          : null;
-
-      const candidateResult = await client.query(
-        `INSERT INTO candidates (candidate_id, full_name, email)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (email)
-         DO UPDATE SET full_name = EXCLUDED.full_name
-         RETURNING candidate_id`,
-        [randomUUID(), name, email]
-      );
-
-      const candidateId = candidateResult.rows[0].candidate_id;
+      const candidateId = await resolveCandidateProfile(client, candidate);
       candidateIds.set(candidate.id, candidateId);
 
       await client.query(
@@ -494,9 +578,43 @@ async function persistScheduleRun({ input, result }) {
       );
     }
 
-    // Persist interview assignments only for a successful generated schedule.
+    // Persist assignments from successful scheduling runs.
+    // When taskOptions is present, store each task's alternatives.
+    // Older callers returning only schedule remain supported.
+    let savedInterviewCount = 0;
+
     if (result.success) {
-      for (const item of result.schedule) {
+      let assignmentsToPersist = result.schedule;
+
+      if (Array.isArray(result.taskOptions)) {
+        assignmentsToPersist = [];
+
+        const optionsByTaskId = new Map(
+          result.taskOptions.map((group) => [
+            group.taskId,
+            group.options,
+          ])
+        );
+
+        for (const task of input.tasks) {
+          const taskOptions = optionsByTaskId.get(task.id);
+
+          if (!Array.isArray(taskOptions) || taskOptions.length === 0) {
+            throw new Error(
+              `No generated options were found for task ${task.id}.`
+            );
+          }
+
+          for (const option of taskOptions) {
+            assignmentsToPersist.push({
+              ...option,
+              taskId: task.id,
+            });
+          }
+        }
+      }
+
+      for (const item of assignmentsToPersist) {
         const taskId = taskIds.get(item.taskId);
         const roomId = roomIds.get(item.roomId);
 
@@ -550,6 +668,8 @@ async function persistScheduleRun({ input, result }) {
             [eventId, scheduleId, interviewerId]
           );
         }
+
+        savedInterviewCount++;
       }
     }
 
@@ -557,7 +677,7 @@ async function persistScheduleRun({ input, result }) {
 
     return {
       eventId,
-      savedInterviews: result.success ? result.schedule.length : 0,
+      savedInterviews: result.success ? savedInterviewCount : 0,
       reusedEvent: reusingEvent,
       schedulePersisted: result.success,
     };

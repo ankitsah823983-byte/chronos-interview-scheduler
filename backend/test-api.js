@@ -68,6 +68,38 @@ let failed = 0;
 let savedEventId = null;
 let createdDraftEventId = null;
 let infeasibleEventId = null;
+let savedOptionCount = null;
+let draftOptionCount = null;
+
+function countTaskOptions(taskOptions) {
+  assert.ok(
+    Array.isArray(taskOptions),
+    "Expected taskOptions in the scheduling response."
+  );
+
+  assert.ok(
+    taskOptions.length > 0,
+    "Expected at least one task option group."
+  );
+
+  let total = 0;
+
+  for (const group of taskOptions) {
+    assert.ok(
+      group && Array.isArray(group.options),
+      "Each task must contain an options array."
+    );
+
+    assert.ok(
+      group.options.length > 1,
+      `Expected multiple options for task ${group.taskId}.`
+    );
+
+    total += group.options.length;
+  }
+
+  return total;
+}
 
 async function test(name, callback) {
   try {
@@ -124,10 +156,27 @@ async function testSuccessfulGeneration() {
 
   assert.equal(response.status, 200, JSON.stringify(body));
   assert.equal(body.success, true);
+
+  // The base schedule still contains one assignment per task.
   assert.equal(body.schedule.length, 2);
+
   assert.deepEqual(body.unscheduledTasks, []);
   assert.ok(body.persistence?.eventId);
-  assert.equal(body.persistence.savedInterviews, 2);
+
+  // Count alternatives separately from the base schedule.
+  savedOptionCount = countTaskOptions(body.taskOptions);
+
+  assert.equal(body.taskOptions.length, body.schedule.length);
+
+  assert.ok(
+    savedOptionCount > body.schedule.length,
+    "Expected alternatives beyond the base schedule."
+  );
+
+  assert.equal(
+    body.persistence.savedInterviews,
+    savedOptionCount
+  );
 
   savedEventId = body.persistence.eventId;
 }
@@ -150,10 +199,12 @@ async function testCreateDraftEvent() {
   assert.equal(response.status, 201, JSON.stringify(body));
   assert.equal(body.success, true);
   assert.ok(body.event?.eventId);
+
   assert.equal(
     body.event.eventName,
     "Chronos Draft Creation Test Event"
   );
+
   assert.equal(body.event.eventDate, "2026-12-10");
   assert.equal(body.event.status, "draft");
 
@@ -281,7 +332,11 @@ async function testListSavedEvents() {
   assert.equal(scheduledEvent.eventName, "Chronos API Test Event");
   assert.equal(scheduledEvent.eventDate, TEST_EVENT_DATE);
   assert.equal(scheduledEvent.status, "draft");
-  assert.equal(scheduledEvent.interviewCount, 2);
+
+  assert.equal(
+    scheduledEvent.interviewCount,
+    savedOptionCount
+  );
 
   const emptyDraft = body.events.find(
     (item) => item.eventId === createdDraftEventId
@@ -309,7 +364,23 @@ async function testReuseDraftWithoutDuplicates() {
     assert.equal(body.persistence.eventId, createdDraftEventId);
     assert.equal(body.persistence.reusedEvent, true);
     assert.equal(body.persistence.schedulePersisted, true);
-    assert.equal(body.persistence.savedInterviews, 2);
+
+    const generatedOptionCount = countTaskOptions(body.taskOptions);
+
+    if (draftOptionCount === null) {
+      draftOptionCount = generatedOptionCount;
+    } else {
+      assert.equal(
+        generatedOptionCount,
+        draftOptionCount,
+        "Regeneration should produce a consistent options count for identical input."
+      );
+    }
+
+    assert.equal(
+      body.persistence.savedInterviews,
+      draftOptionCount
+    );
   }
 
   const { response, body } = await getSchedule(createdDraftEventId);
@@ -317,11 +388,11 @@ async function testReuseDraftWithoutDuplicates() {
   assert.equal(response.status, 200);
   assert.equal(body.event.eventId, createdDraftEventId);
   assert.equal(body.event.status, "draft");
-  assert.equal(body.savedInterviews, 2);
-  assert.equal(body.schedule.length, 2);
+  assert.equal(body.savedInterviews, draftOptionCount);
+  assert.equal(body.schedule.length, draftOptionCount);
 }
 
-// 11. Failed regeneration must preserve the previous saved schedule.
+// 11. Failed regeneration must preserve the previous saved options.
 async function testFailedRegenerationPreservesDraft() {
   const payload = {
     ...makePayload(),
@@ -348,15 +419,19 @@ async function testFailedRegenerationPreservesDraft() {
   assert.equal(body.persistence.eventId, createdDraftEventId);
   assert.equal(body.persistence.reusedEvent, true);
   assert.equal(body.persistence.schedulePersisted, false);
-  assert.equal(body.persistence.savedInterviews, 2);
+
+  assert.equal(
+    body.persistence.savedInterviews,
+    draftOptionCount
+  );
 
   const { response: getResponse, body: getBody } =
     await getSchedule(createdDraftEventId);
 
   assert.equal(getResponse.status, 200);
   assert.equal(getBody.event.status, "draft");
-  assert.equal(getBody.savedInterviews, 2);
-  assert.equal(getBody.schedule.length, 2);
+  assert.equal(getBody.savedInterviews, draftOptionCount);
+  assert.equal(getBody.schedule.length, draftOptionCount);
 }
 
 // 12. Retrieve saved event metadata.
@@ -369,7 +444,7 @@ async function testRetrieveEventMetadata() {
   assert.equal(body.event.eventName, "Chronos API Test Event");
   assert.equal(body.event.eventDate, TEST_EVENT_DATE);
   assert.equal(body.event.status, "draft");
-  assert.equal(body.savedInterviews, 2);
+  assert.equal(body.savedInterviews, savedOptionCount);
 }
 
 // 13. Retrieve full saved configuration.
@@ -400,6 +475,7 @@ async function testRetrieveEventConfiguration() {
   assert.ok(candidateA);
   assert.ok(candidateB);
   assert.deepEqual(candidateA.availableSlots, ["10:00", "10:30"]);
+
   assert.deepEqual(
     candidateB.availableSlots,
     ["10:00", "10:30", "11:00", "11:30"]
@@ -411,10 +487,12 @@ async function testRetrieveEventConfiguration() {
 
   assert.equal(interviewer.name, "Interviewer X");
   assert.ok(interviewer.skills.includes("DSA"));
+
   assert.deepEqual(
     interviewer.availableSlots,
     ["10:00", "10:30", "11:00", "11:30"]
   );
+
   assert.equal(interviewer.maxInterviewsPerDay, 2);
 
   assert.equal(configuration.rooms.length, 1);
@@ -422,6 +500,7 @@ async function testRetrieveEventConfiguration() {
   const room = configuration.rooms[0];
 
   assert.equal(room.name, "Room 1");
+
   assert.deepEqual(
     room.availableSlots,
     ["10:00", "10:30", "11:00", "11:30"]
@@ -447,19 +526,22 @@ async function testRetrieveEventConfiguration() {
   assert.equal(technicalTask.durationSlots, 1);
 }
 
-// 14. Retrieve interview details and unique IDs.
+// 14. Retrieve alternative interview details and unique IDs.
 async function testRetrieveInterviewDetails() {
   const { response, body } = await getSchedule(savedEventId);
 
   assert.equal(response.status, 200);
-  assert.equal(body.schedule.length, 2);
+  assert.equal(body.schedule.length, savedOptionCount);
 
   const interviewIds = body.schedule.map(
     (interview) => interview.interviewId
   );
 
-  assert.ok(interviewIds.every((id) => id !== null && id !== undefined));
-  assert.equal(new Set(interviewIds).size, 2);
+  assert.ok(
+    interviewIds.every((id) => id !== null && id !== undefined)
+  );
+
+  assert.equal(new Set(interviewIds).size, savedOptionCount);
 
   for (const interview of body.schedule) {
     assert.ok(interview.taskId);
@@ -472,6 +554,39 @@ async function testRetrieveInterviewDetails() {
     assert.ok(interview.startTime);
     assert.ok(interview.endTime);
     assert.equal(interview.status, "draft");
+  }
+
+  // Every task should have multiple distinct options.
+  const optionsByTask = new Map();
+
+  for (const interview of body.schedule) {
+    if (!optionsByTask.has(interview.taskId)) {
+      optionsByTask.set(interview.taskId, []);
+    }
+
+    optionsByTask.get(interview.taskId).push(interview);
+  }
+
+  assert.equal(optionsByTask.size, 2);
+
+  for (const [taskId, options] of optionsByTask) {
+    assert.ok(
+      options.length > 1,
+      `Expected multiple saved options for task ${taskId}.`
+    );
+
+    const uniqueSlotKeys = new Set(
+      options.map(
+        (option) =>
+          `${option.startTime}|${option.endTime}|${option.roomId}|${option.interviewerIds.join(",")}`
+      )
+    );
+
+    assert.equal(
+      uniqueSlotKeys.size,
+      options.length,
+      `Task ${taskId} contains duplicate options.`
+    );
   }
 }
 
@@ -505,7 +620,7 @@ async function testPublishEmptyEvent() {
   assert.equal(eventBody.event.status, "draft");
 }
 
-// 18. Publish a valid draft schedule.
+// 18. Publish a valid draft schedule and all its options.
 async function testPublishValidEvent() {
   const { response, body } = await postPublish(savedEventId);
 
@@ -513,16 +628,16 @@ async function testPublishValidEvent() {
   assert.equal(body.success, true);
   assert.equal(body.event.eventId, savedEventId);
   assert.equal(body.event.status, "published");
-  assert.equal(body.publishedInterviews, 2);
+  assert.equal(body.publishedInterviews, savedOptionCount);
 }
 
-// 19. Published status persists.
+// 19. Published status persists for all options.
 async function testPublishedStatusPersists() {
   const { response, body } = await getSchedule(savedEventId);
 
   assert.equal(response.status, 200);
   assert.equal(body.event.status, "published");
-  assert.equal(body.schedule.length, 2);
+  assert.equal(body.schedule.length, savedOptionCount);
 
   for (const interview of body.schedule) {
     assert.equal(interview.status, "published");
@@ -536,7 +651,7 @@ async function testRepeatedPublish() {
   assert.equal(response.status, 200);
   assert.equal(body.success, true);
   assert.equal(body.alreadyPublished, true);
-  assert.equal(body.publishedInterviews, 2);
+  assert.equal(body.publishedInterviews, savedOptionCount);
 }
 
 // 21. Published event cannot be regenerated.
@@ -553,8 +668,9 @@ async function testCannotRegeneratePublishedEvent() {
   assert.match(body.error, /draft event/i);
 
   const { body: getBody } = await getSchedule(savedEventId);
+
   assert.equal(getBody.event.status, "published");
-  assert.equal(getBody.savedInterviews, 2);
+  assert.equal(getBody.savedInterviews, savedOptionCount);
 }
 
 // 22. Publishing an unknown event returns 404.
@@ -573,30 +689,105 @@ async function main() {
   try {
     console.log("Chronos API and event lifecycle tests\n");
 
-    await test("Generates and persists a valid draft schedule", testSuccessfulGeneration);
-    await test("Creates an independent draft event", testCreateDraftEvent);
+    await test(
+      "Generates and persists a valid draft schedule with alternatives",
+      testSuccessfulGeneration
+    );
+
+    await test(
+      "Creates an independent draft event",
+      testCreateDraftEvent
+    );
+
     await test("Rejects missing scheduling arrays", testMissingArrays);
     await test("Rejects empty scheduling arrays", testEmptyArrays);
     await test("Rejects invalid time formatting", testInvalidTime);
-    await test("Rejects a missing event date", testMissingEventDate);
-    await test("Rejects an impossible calendar date", testImpossibleDate);
-    await test("Returns 422 for an infeasible schedule", testInfeasibleSchedule);
-    await test("Lists saved events and interview counts", testListSavedEvents);
-    await test("Reuses a draft without duplicate interviews", testReuseDraftWithoutDuplicates);
-    await test("Preserves draft interviews when regeneration fails", testFailedRegenerationPreservesDraft);
-    await test("Retrieves saved event metadata", testRetrieveEventMetadata);
-    await test("Retrieves the full event configuration", testRetrieveEventConfiguration);
-    await test("Retrieves interview details and unique IDs", testRetrieveInterviewDetails);
-    await test("Returns 404 for an unknown event", testUnknownEvent);
-    await test("Rejects an invalid publish UUID", testInvalidPublishId);
-    await test("Rejects publishing an event with no interviews", testPublishEmptyEvent);
-    await test("Publishes a valid draft schedule", testPublishValidEvent);
-    await test("Persists published event and interview statuses", testPublishedStatusPersists);
-    await test("Handles repeated publish requests safely", testRepeatedPublish);
-    await test("Rejects regeneration of a published event", testCannotRegeneratePublishedEvent);
-    await test("Returns 404 when publishing an unknown event", testPublishUnknownEvent);
 
-    console.log(`\nTest summary: ${passed} passed, ${failed} failed.`);
+    await test(
+      "Rejects a missing event date",
+      testMissingEventDate
+    );
+
+    await test(
+      "Rejects an impossible calendar date",
+      testImpossibleDate
+    );
+
+    await test(
+      "Returns 422 for an infeasible schedule",
+      testInfeasibleSchedule
+    );
+
+    await test(
+      "Lists saved events and alternative interview counts",
+      testListSavedEvents
+    );
+
+    await test(
+      "Reuses a draft without duplicating alternatives",
+      testReuseDraftWithoutDuplicates
+    );
+
+    await test(
+      "Preserves draft alternatives when regeneration fails",
+      testFailedRegenerationPreservesDraft
+    );
+
+    await test(
+      "Retrieves saved event metadata",
+      testRetrieveEventMetadata
+    );
+
+    await test(
+      "Retrieves the full event configuration",
+      testRetrieveEventConfiguration
+    );
+
+    await test(
+      "Retrieves saved alternative details and unique IDs",
+      testRetrieveInterviewDetails
+    );
+
+    await test("Returns 404 for an unknown event", testUnknownEvent);
+
+    await test(
+      "Rejects an invalid publish UUID",
+      testInvalidPublishId
+    );
+
+    await test(
+      "Rejects publishing an event with no interviews",
+      testPublishEmptyEvent
+    );
+
+    await test(
+      "Publishes all valid draft options",
+      testPublishValidEvent
+    );
+
+    await test(
+      "Persists published status for every option",
+      testPublishedStatusPersists
+    );
+
+    await test(
+      "Handles repeated publish requests safely",
+      testRepeatedPublish
+    );
+
+    await test(
+      "Rejects regeneration of a published event",
+      testCannotRegeneratePublishedEvent
+    );
+
+    await test(
+      "Returns 404 when publishing an unknown event",
+      testPublishUnknownEvent
+    );
+
+    console.log(
+      `\nTest summary: ${passed} passed, ${failed} failed.`
+    );
 
     if (failed > 0) {
       process.exitCode = 1;

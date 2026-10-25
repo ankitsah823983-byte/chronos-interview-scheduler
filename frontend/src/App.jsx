@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import "./App.css";
+import CoordinatorInvitations from "./CoordinatorInvitations";
 
 const INITIAL_TIME_SLOTS = ["10:00", "10:30", "11:00", "11:30"];
 
@@ -7,11 +8,13 @@ const INITIAL_CANDIDATES = [
   {
     id: "c1",
     name: "Candidate A",
+    email: "",
     availableSlotsText: "10:00, 10:30",
   },
   {
     id: "c2",
     name: "Candidate B",
+    email: "",
     availableSlotsText: "10:00, 10:30, 11:00, 11:30",
   },
 ];
@@ -20,6 +23,7 @@ const INITIAL_INTERVIEWERS = [
   {
     id: "i1",
     name: "Interviewer X",
+    email: "",
     skillsText: "DSA",
     availableSlotsText: "10:00, 10:30, 11:00, 11:30",
     maxInterviewsPerDay: "2",
@@ -27,6 +31,7 @@ const INITIAL_INTERVIEWERS = [
   {
     id: "i2",
     name: "Interviewer Y",
+    email: "",
     skillsText: "OS, DBMS",
     availableSlotsText: "10:00, 10:30, 11:00, 11:30",
     maxInterviewsPerDay: "2",
@@ -73,6 +78,10 @@ const DIAGNOSTIC_LABELS = {
   INTERVIEWER_WORKLOAD_LIMIT: "Interviewer workload limit",
 };
 
+function isValidOptionalEmail(value) {
+  const email = typeof value === "string" ? value.trim() : "";
+  return email.length === 0 || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
 function parseList(value) {
   return value
     .split(",")
@@ -219,6 +228,7 @@ function App() {
       {
         id: `c-${Date.now()}`,
         name: `Candidate ${current.length + 1}`,
+        email: "",
         availableSlotsText: timeSlotsText,
       },
     ]);
@@ -244,6 +254,7 @@ function App() {
       {
         id: `i-${Date.now()}`,
         name: `Interviewer ${current.length + 1}`,
+        email: "",
         skillsText: "DSA",
         availableSlotsText: timeSlotsText,
         maxInterviewsPerDay: "2",
@@ -434,6 +445,7 @@ function App() {
       (saved.candidates || []).map((candidate) => ({
         id: candidate.id,
         name: candidate.name || "",
+        email: candidate.email || "",
         availableSlotsText: (candidate.availableSlots || []).join(", "),
       }))
     );
@@ -441,6 +453,7 @@ function App() {
       (saved.interviewers || []).map((interviewer) => ({
         id: interviewer.id,
         name: interviewer.name || "",
+        email: interviewer.email || "",
         skillsText: (interviewer.skills || []).join(", "),
         availableSlotsText: (interviewer.availableSlots || []).join(", "),
         maxInterviewsPerDay: String(interviewer.maxInterviewsPerDay ?? 2),
@@ -598,15 +611,26 @@ function App() {
       return;
     }
 
+    if (candidates.some((item) => !isValidOptionalEmail(item.email))) {
+      setApiError("Enter a valid email address for each candidate who has an email.");
+      return;
+    }
+
+    if (interviewers.some((item) => !isValidOptionalEmail(item.email))) {
+      setApiError("Enter a valid email address for each interviewer who has an email.");
+      return;
+    }
     const candidateData = candidates.map((item) => ({
       id: item.id,
       name: item.name.trim(),
+      email: (item.email || "").trim().toLowerCase(),
       availableSlots: parseList(item.availableSlotsText),
     }));
 
     const interviewerData = interviewers.map((item) => ({
       id: item.id,
       name: item.name.trim(),
+      email: (item.email || "").trim().toLowerCase(),
       skills: parseList(item.skillsText),
       availableSlots: parseList(item.availableSlotsText),
       ...(item.maxInterviewsPerDay.trim() !== ""
@@ -1124,6 +1148,21 @@ function App() {
                   </label>
 
                   <label className="form-field">
+                    <span>Candidate email (needed for invitation)</span>
+                    <input
+                      type="email"
+                      autoComplete="off"
+                      value={candidate.email || ""}
+                      onChange={(event) => {
+                        updateCandidate(candidate.id, {
+                          email: event.target.value,
+                        });
+                        clearFeedback();
+                      }}
+                      placeholder="candidate@example.com"
+                    />
+                  </label>
+                  <label className="form-field">
                     <span>Available slots</span>
                     <input
                       value={candidate.availableSlotsText}
@@ -1187,6 +1226,21 @@ function App() {
                     />
                   </label>
 
+                  <label className="form-field">
+                    <span>Interviewer email (needed for invitation)</span>
+                    <input
+                      type="email"
+                      autoComplete="off"
+                      value={interviewer.email || ""}
+                      onChange={(event) => {
+                        updateInterviewer(interviewer.id, {
+                          email: event.target.value,
+                        });
+                        clearFeedback();
+                      }}
+                      placeholder="interviewer@example.com"
+                    />
+                  </label>
                   <label className="form-field">
                     <span>Skills (comma-separated)</span>
                     <input
@@ -1662,6 +1716,8 @@ function App() {
             </article>
           </div>
         </section>
+
+        <CoordinatorInvitations />
 
         <section className="workflow" id="workflow">
           <p className="section-kicker">FROM CHAOS TO CLARITY</p>
