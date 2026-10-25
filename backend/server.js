@@ -1,4 +1,3 @@
-
 const express = require("express");
 const cors = require("cors");
 const session = require("express-session");
@@ -7,9 +6,13 @@ const connectPgSimple = require("connect-pg-simple");
 const pool = require("./db");
 const authRouter = require("./auth");
 const invitationsRouter = require("./invitations");
+const interviewerAvailabilityRouter = require("./interviewer-availability");
 const { requireAuth, requireRole } = require("./auth-middleware");
 const { generateSchedule } = require("./scheduler");
-const { persistScheduleRun } = require("./persistence");
+const {
+  persistScheduleRun,
+  applySubmittedInterviewerAvailability,
+} = require("./persistence");
 
 const app = express();
 const PORT = 5000;
@@ -71,6 +74,14 @@ app.use(
   requireAuth,
   requireRole("coordinator"),
   invitationsRouter
+);
+
+// INTERVIEWER ONLY: manage availability for assigned events.
+app.use(
+  "/api/interviewer",
+  requireAuth,
+  requireRole("interviewer"),
+  interviewerAvailabilityRouter
 );
 
 function isValidUuid(value) {
@@ -279,13 +290,40 @@ app.post(
       }
     }
 
+    let effectiveInterviewers = interviewers;
+
+    // For an existing event, apply interviewers' latest submitted
+    // availability before generating a replacement schedule.
+    if (reuseExistingEvent) {
+      try {
+        const availabilityInput =
+          await applySubmittedInterviewerAvailability({
+            eventId,
+            timeSlots,
+            interviewers,
+          });
+
+        effectiveInterviewers = availabilityInput.interviewers;
+      } catch (error) {
+        console.error(
+          "Failed to load submitted interviewer availability:",
+          error
+        );
+
+        return res.status(500).json({
+          success: false,
+          error: "Could not load submitted interviewer availability.",
+        });
+      }
+    }
+
     let result;
 
     try {
       result = generateSchedule({
         timeSlots,
         candidates,
-        interviewers,
+        interviewers: effectiveInterviewers,
         rooms,
         tasks,
       });
@@ -305,7 +343,7 @@ app.post(
           eventDate,
           timeSlots,
           candidates,
-          interviewers,
+          interviewers: effectiveInterviewers,
           rooms,
           tasks,
         },

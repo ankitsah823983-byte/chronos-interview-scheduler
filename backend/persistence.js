@@ -7,15 +7,181 @@ function createPersistenceError(message, code) {
   return error;
 }
 
+function isValidUuid(value) {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      value
+    )
+  );
+}
+
+async function resolveInterviewerProfile(client, interviewer) {
+  const name = interviewer.name?.trim() || interviewer.id;
+
+  const email =
+    typeof interviewer.email === "string" && interviewer.email.trim()
+      ? interviewer.email.trim()
+      : null;
+
+  // Saved event configuration contains the actual database UUID.
+  // Reuse it so account links and submissions remain attached.
+  const suppliedId = isValidUuid(interviewer.id) ? interviewer.id : null;
+
+  if (suppliedId) {
+    const existingResult = await client.query(
+      `SELECT interviewer_id
+       FROM interviewers
+       WHERE interviewer_id = $1
+       FOR UPDATE`,
+      [suppliedId]
+    );
+
+    if (existingResult.rowCount > 0) {
+      await client.query(
+        `UPDATE interviewers
+         SET full_name = $2
+         WHERE interviewer_id = $1`,
+        [suppliedId, name]
+      );
+
+      return suppliedId;
+    }
+  }
+
+  // If an email is supplied, try to reuse the matching existing profile.
+  if (email) {
+    const emailResult = await client.query(
+      `SELECT interviewer_id
+       FROM interviewers
+       WHERE lower(trim(email)) = lower(trim($1))
+       ORDER BY created_at, interviewer_id
+       LIMIT 1`,
+      [email]
+    );
+
+    if (emailResult.rowCount > 0) {
+      const existingId = emailResult.rows[0].interviewer_id;
+
+      await client.query(
+        `UPDATE interviewers
+         SET full_name = $2
+         WHERE interviewer_id = $1`,
+        [existingId, name]
+      );
+
+      return existingId;
+    }
+  }
+
+  // New interviewer: keep a supplied UUID when available, otherwise
+  // generate one. Existing database-backed UUIDs were handled above.
+  const newId = suppliedId || randomUUID();
+
+  const insertResult = await client.query(
+    `INSERT INTO interviewers
+       (interviewer_id, full_name, email)
+     VALUES ($1, $2, $3)
+     RETURNING interviewer_id`,
+    [newId, name, email]
+  );
+
+  return insertResult.rows[0].interviewer_id;
+}
+
+async function readSubmittedAvailabilityByInterviewerId(client, eventId) {
+  const result = await client.query(
+    `SELECT
+       submission.interviewer_id AS "interviewerId",
+       to_char(selected.slot_time, 'HH24:MI') AS "slotTime"
+     FROM interviewer_availability_submissions submission
+     LEFT JOIN interviewer_availability_submission_slots selected
+       ON selected.event_id = submission.event_id
+      AND selected.interviewer_id = submission.interviewer_id
+     WHERE submission.event_id = $1
+     ORDER BY submission.interviewer_id, selected.slot_time`,
+    [eventId]
+  );
+
+  const submissions = new Map();
+
+  for (const row of result.rows) {
+    if (!submissions.has(row.interviewerId)) {
+      submissions.set(row.interviewerId, { slots: new Set() });
+    }
+
+    if (row.slotTime) {
+      submissions.get(row.interviewerId).slots.add(row.slotTime);
+    }
+  }
+
+  return submissions;
+}
+
+async function applySubmittedInterviewerAvailability(input) {
+  if (
+    !input ||
+    !input.eventId ||
+    !Array.isArray(input.interviewers) ||
+    !Array.isArray(input.timeSlots)
+  ) {
+    return input;
+  }
+
+  const result = await pool.query(
+    `SELECT
+       submission.interviewer_id AS "interviewerId",
+       to_char(selected.slot_time, 'HH24:MI') AS "slotTime"
+     FROM interviewer_availability_submissions submission
+     LEFT JOIN interviewer_availability_submission_slots selected
+       ON selected.event_id = submission.event_id
+      AND selected.interviewer_id = submission.interviewer_id
+     WHERE submission.event_id = $1
+     ORDER BY submission.interviewer_id, selected.slot_time`,
+    [input.eventId]
+  );
+
+  const byInterviewerId = new Map();
+
+  for (const row of result.rows) {
+    if (!byInterviewerId.has(row.interviewerId)) {
+      byInterviewerId.set(row.interviewerId, { slots: new Set() });
+    }
+
+    if (row.slotTime) {
+      byInterviewerId.get(row.interviewerId).slots.add(row.slotTime);
+    }
+  }
+
+  const validSlots = new Set(input.timeSlots);
+
+  const interviewers = input.interviewers.map((interviewer) => {
+    const submission = isValidUuid(interviewer.id)
+      ? byInterviewerId.get(interviewer.id)
+      : null;
+
+    if (!submission) {
+      return interviewer;
+    }
+
+    return {
+      ...interviewer,
+      availableSlots: [...submission.slots].filter((slot) =>
+        validSlots.has(slot)
+      ),
+    };
+  });
+
+  return { ...input, interviewers };
+}
+
 async function clearDraftSchedule(client, eventId) {
-  // Delete interview assignments first through the scheduled interview rows.
   await client.query(
     `DELETE FROM scheduled_interviews
      WHERE event_id = $1`,
     [eventId]
   );
 
-  // Remove event-specific tasks and resource availability.
   await client.query(
     `DELETE FROM interview_tasks
      WHERE event_id = $1`,
@@ -75,15 +241,14 @@ async function persistScheduleRun({ input, result }) {
   const eventId = requestedEventId || randomUUID();
   const client = await pool.connect();
 
+  let submittedAvailabilityByInterviewerId = new Map();
+
   try {
     await client.query("BEGIN");
 
     if (reusingEvent) {
-      // Lock the event so it cannot be published while this draft is rebuilt.
       const eventResult = await client.query(
-        `SELECT
-           event_id,
-           status
+        `SELECT event_id, status
          FROM recruitment_events
          WHERE event_id = $1
          FOR UPDATE`,
@@ -104,7 +269,7 @@ async function persistScheduleRun({ input, result }) {
         );
       }
 
-      // A failed attempt must not destroy a previously saved draft schedule.
+      // Failed generation must leave the existing draft untouched.
       if (!result.success) {
         const countResult = await client.query(
           `SELECT COUNT(*)::int AS count
@@ -123,8 +288,10 @@ async function persistScheduleRun({ input, result }) {
         };
       }
 
-      // Replace the event's old schedule only when a new complete schedule
-      // has been generated. Everything is inside this transaction.
+      // Capture submissions before clearing event-specific assignments.
+      submittedAvailabilityByInterviewerId =
+        await readSubmittedAvailabilityByInterviewerId(client, eventId);
+
       await clearDraftSchedule(client, eventId);
     } else {
       const eventName =
@@ -156,7 +323,7 @@ async function persistScheduleRun({ input, result }) {
     const roomIds = new Map();
     const taskIds = new Map();
 
-    // Save candidates and their event-specific availability.
+    // Save candidates and event-specific candidate availability.
     for (const candidate of input.candidates) {
       const name = candidate.name?.trim() || candidate.id;
 
@@ -197,25 +364,13 @@ async function persistScheduleRun({ input, result }) {
       }
     }
 
-    // Save interviewers, skills, event participation and availability.
+    // Save interviewers, retaining existing profile identity when possible.
     for (const interviewer of input.interviewers) {
-      const name = interviewer.name?.trim() || interviewer.id;
-
-      const email =
-        typeof interviewer.email === "string" && interviewer.email.trim()
-          ? interviewer.email.trim()
-          : null;
-
-      const interviewerResult = await client.query(
-        `INSERT INTO interviewers (interviewer_id, full_name, email)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (email)
-         DO UPDATE SET full_name = EXCLUDED.full_name
-         RETURNING interviewer_id`,
-        [randomUUID(), name, email]
+      const interviewerId = await resolveInterviewerProfile(
+        client,
+        interviewer
       );
 
-      const interviewerId = interviewerResult.rows[0].interviewer_id;
       interviewerIds.set(interviewer.id, interviewerId);
 
       await client.query(
@@ -241,7 +396,14 @@ async function persistScheduleRun({ input, result }) {
         );
       }
 
-      for (const slot of interviewer.availableSlots || []) {
+      const submittedAvailability =
+        submittedAvailabilityByInterviewerId.get(interviewerId);
+
+      const availableSlots = submittedAvailability
+        ? [...submittedAvailability.slots]
+        : interviewer.availableSlots || [];
+
+      for (const slot of availableSlots) {
         if (!validSlots.has(slot)) continue;
 
         await client.query(
@@ -252,9 +414,34 @@ async function persistScheduleRun({ input, result }) {
           [eventId, interviewerId, slot]
         );
       }
+
+      if (submittedAvailability) {
+        // Permanently discard submitted choices which are no longer
+        // valid for this event's current time-slot configuration.
+        await client.query(
+          `DELETE FROM interviewer_availability_submission_slots
+           WHERE event_id = $1
+             AND interviewer_id = $2
+             AND to_char(slot_time, 'HH24:MI') <> ALL($3::text[])`,
+          [eventId, interviewerId, [...validSlots]]
+        );
+      }
     }
 
-    // Save rooms and their event-specific availability.
+    // Remove submission records for interviewers no longer assigned to event.
+    await client.query(
+      `DELETE FROM interviewer_availability_submissions submission
+       WHERE submission.event_id = $1
+         AND NOT EXISTS (
+           SELECT 1
+           FROM event_interviewers assignment
+           WHERE assignment.event_id = submission.event_id
+             AND assignment.interviewer_id = submission.interviewer_id
+         )`,
+      [eventId]
+    );
+
+    // Save rooms and their availability.
     for (const room of input.rooms) {
       const roomId = randomUUID();
       roomIds.set(room.id, roomId);
@@ -278,7 +465,7 @@ async function persistScheduleRun({ input, result }) {
       }
     }
 
-    // Save the event's interview tasks.
+    // Save event interview tasks.
     for (const task of input.tasks) {
       const taskId = randomUUID();
       taskIds.set(task.id, taskId);
@@ -307,7 +494,7 @@ async function persistScheduleRun({ input, result }) {
       );
     }
 
-    // Persist scheduled interviews only when the scheduler succeeded.
+    // Persist interview assignments only for a successful generated schedule.
     if (result.success) {
       for (const item of result.schedule) {
         const taskId = taskIds.get(item.taskId);
@@ -335,7 +522,6 @@ async function persistScheduleRun({ input, result }) {
 
         const scheduleId = scheduleResult.rows[0].schedule_id;
 
-        // The scheduler currently assigns one interviewer per interview.
         const originalInterviewerIds = Array.isArray(item.interviewerIds)
           ? item.interviewerIds
           : item.interviewerId
@@ -388,4 +574,7 @@ async function persistScheduleRun({ input, result }) {
   }
 }
 
-module.exports = { persistScheduleRun };
+module.exports = {
+  persistScheduleRun,
+  applySubmittedInterviewerAvailability,
+};

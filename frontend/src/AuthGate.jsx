@@ -1,7 +1,22 @@
-
 import { useEffect, useState } from "react";
+import InterviewerDashboard from "./InterviewerDashboard";
 
 const API_URL = "http://localhost:5000";
+
+function isSupportedRole(role) {
+  return role === "coordinator" || role === "interviewer";
+}
+
+async function logoutSession() {
+  try {
+    await fetch(`${API_URL}/api/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    });
+  } catch {
+    // The current UI will still clear the local session state.
+  }
+}
 
 export default function AuthGate({ children }) {
   const [email, setEmail] = useState("");
@@ -9,6 +24,7 @@ export default function AuthGate({ children }) {
   const [user, setUser] = useState(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -24,10 +40,29 @@ export default function AuthGate({ children }) {
 
         if (cancelled) return;
 
-        if (response.ok && body.success && body.user?.role === "coordinator") {
+        if (
+          response.ok &&
+          body.success &&
+          isSupportedRole(body.user?.role)
+        ) {
           setUser(body.user);
-        } else {
-          setUser(null);
+          return;
+        }
+
+        setUser(null);
+
+        if (
+          response.ok &&
+          body.success &&
+          body.user?.role === "candidate"
+        ) {
+          await logoutSession();
+
+          if (!cancelled) {
+            setError(
+              "The candidate workspace is not available yet. Please sign in with a coordinator or interviewer account."
+            );
+          }
         }
       } catch {
         if (!cancelled) {
@@ -80,16 +115,17 @@ export default function AuthGate({ children }) {
         return;
       }
 
-      if (body.user?.role !== "coordinator") {
-        // This workspace is currently restricted to coordinators.
-        await fetch(`${API_URL}/api/auth/logout`, {
-          method: "POST",
-          credentials: "include",
-        });
+      if (!isSupportedRole(body.user?.role)) {
+        await logoutSession();
+
+        setPassword("");
 
         setError(
-          "This workspace is for coordinators. Candidate and interviewer dashboards will be separate."
+          body.user?.role === "candidate"
+            ? "The candidate workspace is not available yet. Please use a coordinator or interviewer account."
+            : "This account does not have access to a Chronos workspace."
         );
+
         return;
       }
 
@@ -106,6 +142,7 @@ export default function AuthGate({ children }) {
 
   async function handleLogout() {
     setError("");
+    setLoggingOut(true);
 
     try {
       const response = await fetch(`${API_URL}/api/auth/logout`, {
@@ -113,19 +150,28 @@ export default function AuthGate({ children }) {
         credentials: "include",
       });
 
-      const body = await response.json();
+      let body;
 
-      if (!response.ok || !body.success) {
-        setError(body.error || "Logout failed. Please try again.");
+      try {
+        body = await response.json();
+      } catch {
+        body = null;
+      }
+
+      if (!response.ok || !body?.success) {
+        setError(body?.error || "Logout failed. Please try again.");
         return;
       }
 
       setUser(null);
       setPassword("");
+      setEmail("");
     } catch {
       setError(
         "Could not contact the backend to log out. Check your connection."
       );
+    } finally {
+      setLoggingOut(false);
     }
   }
 
@@ -183,9 +229,12 @@ export default function AuthGate({ children }) {
   }
 
   if (user) {
+    const roleLabel =
+      user.role === "interviewer" ? "Interviewer" : "Coordinator";
+
     return (
       <>
-        <div
+        <header
           style={{
             background: "#19181d",
             borderBottom: "1px solid #363238",
@@ -201,24 +250,26 @@ export default function AuthGate({ children }) {
           <span>
             Signed in as <strong>{user.fullName}</strong>
             {" · "}
-            Coordinator
+            {roleLabel}
           </span>
 
           <button
             type="button"
             onClick={handleLogout}
+            disabled={loggingOut}
             style={{
               padding: "8px 14px",
               border: "1px solid #706675",
               borderRadius: "6px",
               background: "transparent",
               color: "#f5f2eb",
-              cursor: "pointer",
+              cursor: loggingOut ? "wait" : "pointer",
+              opacity: loggingOut ? 0.7 : 1,
             }}
           >
-            Log out
+            {loggingOut ? "Logging out..." : "Log out"}
           </button>
-        </div>
+        </header>
 
         {error && (
           <div
@@ -233,7 +284,11 @@ export default function AuthGate({ children }) {
           </div>
         )}
 
-        {children}
+        {user.role === "interviewer" ? (
+          <InterviewerDashboard />
+        ) : (
+          children
+        )}
       </>
     );
   }
@@ -249,7 +304,7 @@ export default function AuthGate({ children }) {
             fontWeight: 700,
           }}
         >
-          CHRONOS · COORDINATOR ACCESS
+          CHRONOS · WORKSPACE ACCESS
         </p>
 
         <h1 style={{ fontSize: "30px", marginBottom: "10px" }}>
@@ -257,8 +312,7 @@ export default function AuthGate({ children }) {
         </h1>
 
         <p style={{ color: "#bcb6c2", lineHeight: 1.6 }}>
-          Sign in to manage recruitment events, review schedules and publish
-          interview plans.
+          Sign in to access your Chronos workspace.
         </p>
 
         <form onSubmit={handleLogin}>
@@ -325,6 +379,7 @@ export default function AuthGate({ children }) {
               ...buttonStyle,
               marginTop: "24px",
               opacity: submitting ? 0.7 : 1,
+              cursor: submitting ? "wait" : "pointer",
             }}
           >
             {submitting ? "Signing in..." : "Sign in"}
@@ -340,7 +395,8 @@ export default function AuthGate({ children }) {
           }}
         >
           Coordinator accounts are provisioned by an authorized administrator.
-          Public registration cannot grant coordinator access.
+          Interviewer access is provided through an invitation. Candidate
+          workspace functionality is not available yet.
         </p>
       </section>
     </main>
