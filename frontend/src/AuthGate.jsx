@@ -1,21 +1,11 @@
 import { useEffect, useState } from "react";
 import InterviewerDashboard from "./InterviewerDashboard";
+import CandidateDashboard from "./CandidateDashboard";
 
 const API_URL = "http://localhost:5000";
 
 function isSupportedRole(role) {
-  return role === "coordinator" || role === "interviewer";
-}
-
-async function logoutSession() {
-  try {
-    await fetch(`${API_URL}/api/auth/logout`, {
-      method: "POST",
-      credentials: "include",
-    });
-  } catch {
-    // The current UI will still clear the local session state.
-  }
+  return ["coordinator", "interviewer", "candidate"].includes(role);
 }
 
 export default function AuthGate({ children }) {
@@ -46,23 +36,8 @@ export default function AuthGate({ children }) {
           isSupportedRole(body.user?.role)
         ) {
           setUser(body.user);
-          return;
-        }
-
-        setUser(null);
-
-        if (
-          response.ok &&
-          body.success &&
-          body.user?.role === "candidate"
-        ) {
-          await logoutSession();
-
-          if (!cancelled) {
-            setError(
-              "The candidate workspace is not available yet. Please sign in with a coordinator or interviewer account."
-            );
-          }
+        } else {
+          setUser(null);
         }
       } catch {
         if (!cancelled) {
@@ -116,16 +91,13 @@ export default function AuthGate({ children }) {
       }
 
       if (!isSupportedRole(body.user?.role)) {
-        await logoutSession();
+        await fetch(`${API_URL}/api/auth/logout`, {
+          method: "POST",
+          credentials: "include",
+        });
 
         setPassword("");
-
-        setError(
-          body.user?.role === "candidate"
-            ? "The candidate workspace is not available yet. Please use a coordinator or interviewer account."
-            : "This account does not have access to a Chronos workspace."
-        );
-
+        setError("This account does not have access to a Chronos workspace.");
         return;
       }
 
@@ -229,8 +201,11 @@ export default function AuthGate({ children }) {
   }
 
   if (user) {
-    const roleLabel =
-      user.role === "interviewer" ? "Interviewer" : "Coordinator";
+    const roleLabel = {
+      coordinator: "Coordinator",
+      interviewer: "Interviewer",
+      candidate: "Candidate",
+    }[user.role];
 
     return (
       <>
@@ -284,7 +259,9 @@ export default function AuthGate({ children }) {
           </div>
         )}
 
-        {user.role === "interviewer" ? (
+        {user.role === "candidate" ? (
+          <CandidateDashboard />
+        ) : user.role === "interviewer" ? (
           <InterviewerDashboard />
         ) : (
           children
@@ -379,7 +356,6 @@ export default function AuthGate({ children }) {
               ...buttonStyle,
               marginTop: "24px",
               opacity: submitting ? 0.7 : 1,
-              cursor: submitting ? "wait" : "pointer",
             }}
           >
             {submitting ? "Signing in..." : "Sign in"}
@@ -395,8 +371,8 @@ export default function AuthGate({ children }) {
           }}
         >
           Coordinator accounts are provisioned by an authorized administrator.
-          Interviewer access is provided through an invitation. Candidate
-          workspace functionality is not available yet.
+          Interviewer accounts use invitations. Candidate accounts can access
+          their published interviews and booking status.
         </p>
       </section>
     </main>

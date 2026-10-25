@@ -7,6 +7,7 @@ const pool = require("./db");
 const authRouter = require("./auth");
 const invitationsRouter = require("./invitations");
 const interviewerAvailabilityRouter = require("./interviewer-availability");
+const candidateBookingRouter = require("./candidate-booking");
 const { requireAuth, requireRole } = require("./auth-middleware");
 const { generateSchedule } = require("./scheduler");
 const {
@@ -83,6 +84,15 @@ app.use(
   requireRole("interviewer"),
   interviewerAvailabilityRouter
 );
+
+// CANDIDATE ONLY: view and book the authenticated candidate's interviews.
+app.use(
+  "/api/candidate",
+  requireAuth,
+  requireRole("candidate"),
+  candidateBookingRouter
+);
+
 
 function isValidUuid(value) {
   return (
