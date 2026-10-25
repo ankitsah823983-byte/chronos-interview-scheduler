@@ -123,6 +123,14 @@ export default function InterviewerDashboard() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
+  const [confirmedInterviews, setConfirmedInterviews] = useState([]);
+  const [loadingConfirmedInterviews, setLoadingConfirmedInterviews] =
+    useState(true);
+  const [calendarDownloadId, setCalendarDownloadId] = useState(null);
+  const [confirmedRefreshCount, setConfirmedRefreshCount] = useState(0);
+  const [calendarError, setCalendarError] = useState("");
+  const [calendarMessage, setCalendarMessage] = useState("");
+
   useEffect(() => {
     let cancelled = false;
 
@@ -139,9 +147,7 @@ export default function InterviewerDashboard() {
 
         if (cancelled) return;
 
-        const assignedEvents = Array.isArray(body.events)
-          ? body.events
-          : [];
+        const assignedEvents = Array.isArray(body.events) ? body.events : [];
 
         setEvents(assignedEvents);
 
@@ -221,12 +227,47 @@ export default function InterviewerDashboard() {
     };
   }, [selectedEventId]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadConfirmedInterviews() {
+      setLoadingConfirmedInterviews(true);
+      setCalendarError("");
+
+      try {
+        const response = await fetch(`${API_URL}/interviewer/interviews`, {
+          credentials: "include",
+        });
+
+        const body = await readResponse(response);
+
+        if (cancelled) return;
+
+        setConfirmedInterviews(
+          Array.isArray(body.interviews) ? body.interviews : []
+        );
+      } catch (requestError) {
+        if (!cancelled) {
+          setCalendarError(requestError.message);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingConfirmedInterviews(false);
+        }
+      }
+    }
+
+    loadConfirmedInterviews();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [confirmedRefreshCount]);
+
   function toggleSlot(time, checked) {
     setSelectedSlots((current) => {
       if (checked) {
-        return current.includes(time)
-          ? current
-          : [...current, time].sort();
+        return current.includes(time) ? current : [...current, time].sort();
       }
 
       return current.filter((slot) => slot !== time);
@@ -307,6 +348,65 @@ export default function InterviewerDashboard() {
     }
   }
 
+  async function handleDownloadCalendar(interview) {
+    if (calendarDownloadId !== null) return;
+
+    setCalendarDownloadId(interview.scheduleId);
+    setCalendarError("");
+    setCalendarMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/interviewer/interviews/${interview.scheduleId}/calendar`,
+        {
+          method: "GET",
+          credentials: "include",
+        }
+      );
+
+      if (!response.ok) {
+        let body = {};
+
+        try {
+          body = await response.json();
+        } catch {
+          // Fall back to a generic message if the server response is not JSON.
+        }
+
+        throw new Error(
+          body.error ||
+            `Could not download calendar invite (${response.status}).`
+        );
+      }
+
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = downloadUrl;
+      link.download = `chronos-interview-${interview.scheduleId}.ics`;
+      link.style.display = "none";
+
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      window.setTimeout(() => {
+        window.URL.revokeObjectURL(downloadUrl);
+      }, 1000);
+
+      setCalendarMessage(
+        "Calendar invite downloaded. Import the .ics file into Google Calendar."
+      );
+    } catch (requestError) {
+      setCalendarError(
+        requestError.message || "Could not download the calendar invite."
+      );
+    } finally {
+      setCalendarDownloadId(null);
+    }
+  }
+
   const event = availability?.event;
   const editable = availability?.editable === true;
 
@@ -324,6 +424,10 @@ export default function InterviewerDashboard() {
         </p>
 
         <section style={styles.panel}>
+          <h2 style={{ fontSize: "21px", margin: "0 0 20px" }}>
+            Your availability
+          </h2>
+
           <label htmlFor="interviewer-event" style={styles.label}>
             Recruitment event
           </label>
@@ -530,6 +634,202 @@ export default function InterviewerDashboard() {
               }}
             >
               {message}
+            </div>
+          )}
+        </section>
+
+        <section style={styles.panel}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: "12px",
+              flexWrap: "wrap",
+            }}
+          >
+            <h2 style={{ fontSize: "21px", margin: 0 }}>
+              Your confirmed interviews
+            </h2>
+            <button
+              type="button"
+              onClick={() => setConfirmedRefreshCount((count) => count + 1)}
+              disabled={loadingConfirmedInterviews || calendarDownloadId !== null}
+              style={{
+                ...styles.secondaryButton,
+                opacity:
+                  loadingConfirmedInterviews || calendarDownloadId !== null
+                    ? 0.6
+                    : 1,
+              }}
+            >
+              Refresh interviews
+            </button>
+          </div>
+
+          <p style={{ ...styles.muted, fontSize: "14px", marginTop: "12px" }}>
+            Interviews booked by candidates and assigned to you appear here.
+            Download an invite to add it to Google Calendar or another calendar
+            app.
+          </p>
+
+          {loadingConfirmedInterviews && (
+            <p style={styles.muted}>Loading your confirmed interviews...</p>
+          )}
+
+          {!loadingConfirmedInterviews &&
+            !calendarError &&
+            confirmedInterviews.length === 0 && (
+              <p style={styles.muted}>
+                No confirmed interviews are currently assigned to you. Once a
+                candidate books an interview with you, it will appear here.
+              </p>
+            )}
+
+          {!loadingConfirmedInterviews &&
+            confirmedInterviews.map((interview) => (
+              <article
+                key={interview.scheduleId}
+                style={{
+                  marginTop: "18px",
+                  padding: "18px",
+                  border: "1px solid #403b45",
+                  borderRadius: "9px",
+                  background: "#141317",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    justifyContent: "space-between",
+                    gap: "12px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div>
+                    <p
+                      style={{
+                        ...styles.eyebrow,
+                        marginBottom: "8px",
+                        letterSpacing: "1px",
+                      }}
+                    >
+                      {interview.eventDate}
+                    </p>
+
+                    <h3 style={{ fontSize: "19px", margin: "0 0 6px" }}>
+                      {interview.eventName}
+                    </h3>
+
+                    <p style={{ ...styles.muted, margin: 0 }}>
+                      {interview.roundName}
+                    </p>
+                  </div>
+
+                  <span
+                    style={{
+                      color: "#c6f0cd",
+                      border: "1px solid #3d6044",
+                      background: "#202a22",
+                      display: "inline-block",
+                      padding: "7px 10px",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                    }}
+                  >
+                    Confirmed
+                  </span>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                    gap: "14px",
+                    marginTop: "18px",
+                  }}
+                >
+                  <div>
+                    <p style={{ ...styles.muted, fontSize: "12px", margin: 0 }}>
+                      Interview time
+                    </p>
+                    <strong>
+                      {interview.startTime}–{interview.endTime}
+                    </strong>
+                  </div>
+
+                  <div>
+                    <p style={{ ...styles.muted, fontSize: "12px", margin: 0 }}>
+                      Candidate
+                    </p>
+                    <strong>{interview.candidateName}</strong>
+                    {interview.candidateEmail && (
+                      <p
+                        style={{
+                          ...styles.muted,
+                          fontSize: "12px",
+                          margin: "4px 0 0",
+                          overflowWrap: "anywhere",
+                        }}
+                      >
+                        {interview.candidateEmail}
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <p style={{ ...styles.muted, fontSize: "12px", margin: 0 }}>
+                      Room
+                    </p>
+                    <strong>{interview.roomName || "To be announced"}</strong>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleDownloadCalendar(interview)}
+                  disabled={calendarDownloadId !== null}
+                  style={{
+                    ...styles.secondaryButton,
+                    marginTop: "18px",
+                    opacity: calendarDownloadId !== null ? 0.6 : 1,
+                    cursor: calendarDownloadId !== null ? "wait" : "pointer",
+                  }}
+                >
+                  {calendarDownloadId === interview.scheduleId
+                    ? "Preparing calendar invite..."
+                    : "Download calendar invite (.ics)"}
+                </button>
+              </article>
+            ))}
+
+          {calendarError && (
+            <div
+              role="alert"
+              style={{
+                ...styles.notice,
+                background: "#321d20",
+                border: "1px solid #67383e",
+                color: "#ffcdcd",
+              }}
+            >
+              {calendarError}
+            </div>
+          )}
+
+          {calendarMessage && (
+            <div
+              role="status"
+              style={{
+                ...styles.notice,
+                background: "#202a22",
+                border: "1px solid #3d6044",
+                color: "#c6f0cd",
+              }}
+            >
+              {calendarMessage}
             </div>
           )}
         </section>

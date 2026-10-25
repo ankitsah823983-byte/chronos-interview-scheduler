@@ -411,6 +411,68 @@ test("Lists the booked status after successful booking", async () => {
   assert.equal(body.interviews[0].bookingStatus, "booked");
 });
 
+test("Downloads an ICS calendar invite for the candidate's booked interview", async () => {
+  const response = await fetch(
+    `${API}/candidate/interviews/${candidateAScheduleId}/calendar`,
+    {
+      headers: { Cookie: candidateACookie },
+    }
+  );
+
+  const contentType = response.headers.get("content-type") || "";
+  const disposition =
+    response.headers.get("content-disposition") || "";
+  const calendar = await response.text();
+  const unfoldedCalendar = calendar.replace(/\r\n[ \t]/g, "");
+
+  assert.equal(response.status, 200, calendar);
+  assert.match(contentType, /text\/calendar/i);
+  assert.match(disposition, /attachment/i);
+  assert.match(calendar, /BEGIN:VCALENDAR/);
+  assert.match(calendar, /BEGIN:VEVENT/);
+  assert.match(
+    calendar,
+    /DTSTART;TZID=Asia\/Kolkata:20270215T100000/
+  );
+  assert.match(
+    calendar,
+    /DTEND;TZID=Asia\/Kolkata:20270215T103000/
+  );
+  assert.match(
+  unfoldedCalendar,
+  /SUMMARY:.*Candidate A Interview/
+);
+  assert.match(calendar, /END:VCALENDAR/);
+});
+
+test("Rejects calendar download before an interview is booked", async () => {
+  const response = await fetch(
+    `${API}/candidate/interviews/${candidateBScheduleId}/calendar`,
+    {
+      headers: { Cookie: candidateBCookie },
+    }
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 409);
+  assert.equal(body.success, false);
+});
+
+test("Does not allow a candidate to download another candidate's calendar invite", async () => {
+  const response = await fetch(
+    `${API}/candidate/interviews/${candidateAScheduleId}/calendar`,
+    {
+      headers: { Cookie: candidateBCookie },
+    }
+  );
+
+  const body = await response.json();
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+});
+
 
 test("Rejects overlapping booking with an already-booked interviewer", async () => {
   const originalResult = await pool.query(

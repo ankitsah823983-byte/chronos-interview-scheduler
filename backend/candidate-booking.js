@@ -498,4 +498,197 @@ router.post("/interviews/:scheduleId/book", async (req, res) => {
   }
 });
 
+// GET /api/candidate/interviews/:scheduleId/calendar
+// Download a calendar file only for the authenticated candidate's
+// confirmed interview.
+function escapeIcsText(value) {
+  return String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,");
+}
+
+function foldIcsLine(line) {
+  const result = [];
+  let current = "";
+  let bytes = 0;
+
+  for (const character of line) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+
+    if (bytes + characterBytes > 75 && current.length > 0) {
+      result.push(current);
+      current = ` ${character}`;
+      bytes = 1 + characterBytes;
+    } else {
+      current += character;
+      bytes += characterBytes;
+    }
+  }
+
+  if (current.length > 0) {
+    result.push(current);
+  }
+
+  return result;
+}
+
+function formatIcsLocalDateTime(date, time) {
+  return `${date.replace(/-/g, "")}T${time.replace(/:/g, "")}`;
+}
+
+router.get("/interviews/:scheduleId/calendar", async (req, res) => {
+  const candidateId = getCandidateId(req, res);
+
+  if (!candidateId) return;
+
+  const { scheduleId } = req.params;
+
+  if (!isValidScheduleId(scheduleId)) {
+    return res.status(400).json({
+      success: false,
+      error: "A valid interview schedule ID is required.",
+    });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT
+         si.schedule_id::text AS "scheduleId",
+         si.status AS "bookingStatus",
+         e.status AS "eventStatus",
+         e.event_name AS "eventName",
+         to_char(e.event_date, 'YYYY-MM-DD') AS "eventDate",
+         it.round_name AS "roundName",
+         to_char(si.start_time, 'HH24:MI:SS') AS "startTime",
+         to_char(si.end_time, 'HH24:MI:SS') AS "endTime",
+         c.full_name AS "candidateName",
+         COALESCE(r.room_name, '') AS "roomName",
+         COALESCE(
+           (
+             SELECT string_agg(
+               DISTINCT i.full_name,
+               ', ' ORDER BY i.full_name
+             )
+             FROM scheduled_interview_interviewers sii
+             JOIN interviewers i
+               ON i.interviewer_id = sii.interviewer_id
+             WHERE sii.event_id = si.event_id
+               AND sii.schedule_id = si.schedule_id
+           ),
+           ''
+         ) AS "interviewerNames"
+       FROM scheduled_interviews si
+       JOIN recruitment_events e
+         ON e.event_id = si.event_id
+       JOIN interview_tasks it
+         ON it.event_id = si.event_id
+        AND it.task_id = si.task_id
+       JOIN candidates c
+         ON c.candidate_id = it.candidate_id
+       LEFT JOIN rooms r
+         ON r.event_id = si.event_id
+        AND r.room_id = si.room_id
+       WHERE si.schedule_id = $1
+         AND it.candidate_id = $2`,
+      [scheduleId, candidateId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "The requested interview was not found for your account.",
+      });
+    }
+
+    const interview = result.rows[0];
+
+    if (
+      interview.eventStatus !== "published" ||
+      interview.bookingStatus !== "booked"
+    ) {
+      return res.status(409).json({
+        success: false,
+        error: "A calendar invite is available only for a confirmed interview.",
+      });
+    }
+
+    if (!interview.interviewerNames) {
+      return res.status(409).json({
+        success: false,
+        error: "The confirmed interview has no assigned interviewer.",
+      });
+    }
+
+    const dateTimeStart = formatIcsLocalDateTime(
+      interview.eventDate,
+      interview.startTime
+    );
+
+    const dateTimeEnd = formatIcsLocalDateTime(
+      interview.eventDate,
+      interview.endTime
+    );
+
+    const description = [
+      `Candidate: ${interview.candidateName}`,
+      `Interviewers: ${interview.interviewerNames}`,
+      `Round: ${interview.roundName}`,
+      `Room: ${interview.roomName || "To be confirmed"}`,
+    ].join("\n");
+
+    const lines = [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//Chronos//Interview Scheduler//EN",
+      "CALSCALE:GREGORIAN",
+      "METHOD:PUBLISH",
+      "BEGIN:VTIMEZONE",
+      "TZID:Asia/Kolkata",
+      "X-LIC-LOCATION:Asia/Kolkata",
+      "BEGIN:STANDARD",
+      "DTSTART:19700101T000000",
+      "TZOFFSETFROM:+0530",
+      "TZOFFSETTO:+0530",
+      "TZNAME:IST",
+      "END:STANDARD",
+      "END:VTIMEZONE",
+      "BEGIN:VEVENT",
+      `UID:chronos-${interview.scheduleId}@chronos.local`,
+      `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")}`,
+      `DTSTART;TZID=Asia/Kolkata:${dateTimeStart}`,
+      `DTEND;TZID=Asia/Kolkata:${dateTimeEnd}`,
+      `SUMMARY:${escapeIcsText(`${interview.eventName} - ${interview.roundName}`)}`,
+      `DESCRIPTION:${escapeIcsText(description)}`,
+      `LOCATION:${escapeIcsText(interview.roomName || "To be confirmed")}`,
+      "STATUS:CONFIRMED",
+      "TRANSP:OPAQUE",
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ];
+
+    const calendarContent =
+      lines.flatMap(foldIcsLine).join("\r\n") + "\r\n";
+
+    res.set("Content-Type", "text/calendar; charset=utf-8");
+    res.set(
+      "Content-Disposition",
+      `attachment; filename="chronos-interview-${scheduleId}.ics"`
+    );
+    res.set("Cache-Control", "no-store");
+
+    return res.send(calendarContent);
+  } catch (error) {
+    console.error("Failed to generate interview calendar file:", error);
+
+    return res.status(500).json({
+      success: false,
+      error: "Could not generate the interview calendar file.",
+    });
+  }
+});
+
 module.exports = router;

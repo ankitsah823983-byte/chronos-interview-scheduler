@@ -15,6 +15,7 @@ const testNames = [];
 const failures = [];
 
 let interviewerId;
+let otherInterviewerId;
 let interviewerUserId;
 let coordinatorUserId;
 let coordinatorCookie;
@@ -24,6 +25,11 @@ let publishedEventId;
 let unassignedEventId;
 
 let interviewerCookie;
+
+let ownCalendarScheduleId;
+let otherInterviewerScheduleId;
+
+const calendarCandidateIds = [];
 
 function test(name, fn) {
   testNames.push({ name, fn });
@@ -169,6 +175,124 @@ async function setup() {
     `Availability Unassigned ${suffix}`,
     "draft",
     false
+  );
+
+  // Create a second interviewer to verify assignment-based privacy.
+  const otherInterviewerResult = await pool.query(
+    `INSERT INTO interviewers (full_name, email)
+     VALUES ($1, $2)
+     RETURNING interviewer_id`,
+    ["Other Calendar Test Interviewer", `other-${suffix}@example.test`]
+  );
+
+  otherInterviewerId = otherInterviewerResult.rows[0].interviewer_id;
+
+  await pool.query(
+    `INSERT INTO event_interviewers
+       (event_id, interviewer_id, max_interviews_per_day)
+     VALUES ($1, $2, 2)
+     ON CONFLICT (event_id, interviewer_id) DO NOTHING`,
+    [publishedEventId, otherInterviewerId]
+  );
+
+  const ownCandidateResult = await pool.query(
+    `INSERT INTO candidates (full_name, email)
+     VALUES ($1, $2)
+     RETURNING candidate_id`,
+    ["Calendar Test Candidate Own", `calendar-own-${suffix}@example.test`]
+  );
+
+  const ownCandidateId = ownCandidateResult.rows[0].candidate_id;
+  calendarCandidateIds.push(ownCandidateId);
+
+  const otherCandidateResult = await pool.query(
+    `INSERT INTO candidates (full_name, email)
+     VALUES ($1, $2)
+     RETURNING candidate_id`,
+    ["Calendar Test Candidate Other", `calendar-other-${suffix}@example.test`]
+  );
+
+  const otherCandidateId = otherCandidateResult.rows[0].candidate_id;
+  calendarCandidateIds.push(otherCandidateId);
+
+  await pool.query(
+    `INSERT INTO event_candidates (event_id, candidate_id)
+     VALUES ($1, $2), ($1, $3)`,
+    [publishedEventId, ownCandidateId, otherCandidateId]
+  );
+
+  const ownRoomResult = await pool.query(
+    `INSERT INTO rooms (event_id, room_name)
+     VALUES ($1, $2)
+     RETURNING room_id`,
+    [publishedEventId, `Calendar Own Room ${suffix}`]
+  );
+
+  const otherRoomResult = await pool.query(
+    `INSERT INTO rooms (event_id, room_name)
+     VALUES ($1, $2)
+     RETURNING room_id`,
+    [publishedEventId, `Calendar Other Room ${suffix}`]
+  );
+
+  const ownTaskResult = await pool.query(
+    `INSERT INTO interview_tasks
+       (event_id, candidate_id, round_name, duration_slots)
+     VALUES ($1, $2, $3, 1)
+     RETURNING task_id`,
+    [publishedEventId, ownCandidateId, "Interviewer Calendar Own"]
+  );
+
+  const otherTaskResult = await pool.query(
+    `INSERT INTO interview_tasks
+       (event_id, candidate_id, round_name, duration_slots)
+     VALUES ($1, $2, $3, 1)
+     RETURNING task_id`,
+    [publishedEventId, otherCandidateId, "Other Interviewer Calendar"]
+  );
+
+  const ownScheduleResult = await pool.query(
+    `INSERT INTO scheduled_interviews
+       (event_id, task_id, room_id, start_time, end_time, status)
+     VALUES ($1, $2, $3, '10:00', '10:30', 'booked')
+     RETURNING schedule_id`,
+    [
+      publishedEventId,
+      ownTaskResult.rows[0].task_id,
+      ownRoomResult.rows[0].room_id,
+    ]
+  );
+
+  ownCalendarScheduleId = String(ownScheduleResult.rows[0].schedule_id);
+
+  await pool.query(
+    `INSERT INTO scheduled_interview_interviewers
+       (event_id, schedule_id, interviewer_id)
+     VALUES ($1, $2, $3)`,
+    [publishedEventId, ownCalendarScheduleId, interviewerId]
+  );
+
+  const otherScheduleResult = await pool.query(
+    `INSERT INTO scheduled_interviews
+       (event_id, task_id, room_id, start_time, end_time, status)
+     VALUES ($1, $2, $3, '10:00', '10:30', 'booked')
+     RETURNING schedule_id`,
+    [
+      publishedEventId,
+      otherTaskResult.rows[0].task_id,
+      otherRoomResult.rows[0].room_id,
+    ]
+  );
+
+  otherInterviewerScheduleId = String(
+    otherScheduleResult.rows[0].schedule_id
+  );
+
+  await pool.query(
+    `INSERT INTO scheduled_interview_interviewers
+       (event_id, schedule_id, interviewer_id)
+     VALUES ($1, $2, $3)`,
+    [publishedEventId, otherInterviewerScheduleId, otherInterviewerId]
   );
 
   interviewerCookie = await login(interviewerEmail);
@@ -393,6 +517,123 @@ test("Does not allow changing a published event", async () => {
   assert.equal(response.status, 409);
 });
 
+test("Rejects unauthenticated requests for confirmed interviewer interviews", async () => {
+  const { response } = await request("/interviewer/interviews");
+
+  assert.equal(response.status, 401);
+});
+
+test("Rejects coordinator access to confirmed interviewer interviews", async () => {
+  const { response } = await request(
+    "/interviewer/interviews",
+    {},
+    coordinatorCookie
+  );
+
+  assert.equal(response.status, 403);
+});
+
+test("Lists only confirmed interviews assigned to the signed-in interviewer", async () => {
+  const { response, body } = await request(
+    "/interviewer/interviews",
+    {},
+    interviewerCookie
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(body.success, true);
+  assert.equal(body.total, 1);
+  assert.equal(body.interviews[0].scheduleId, ownCalendarScheduleId);
+  assert.equal(
+    body.interviews[0].candidateName,
+    "Calendar Test Candidate Own"
+  );
+  assert.equal(body.interviews[0].bookingStatus, "booked");
+});
+
+test("Downloads an ICS file for the interviewer's confirmed interview", async () => {
+  const response = await fetch(
+    `${API}/interviewer/interviews/${ownCalendarScheduleId}/calendar`,
+    {
+      headers: { Cookie: interviewerCookie },
+    }
+  );
+
+  const contentType = response.headers.get("content-type") || "";
+  const disposition = response.headers.get("content-disposition") || "";
+  const calendar = await response.text();
+  const unfoldedCalendar = calendar.replace(/\r\n[ \t]/g, "");
+
+  assert.equal(response.status, 200, calendar);
+  assert.match(contentType, /text\/calendar/i);
+  assert.match(disposition, /attachment/i);
+  assert.match(unfoldedCalendar, /BEGIN:VCALENDAR/);
+  assert.match(unfoldedCalendar, /BEGIN:VEVENT/);
+  assert.match(
+    unfoldedCalendar,
+    /DTSTART;TZID=Asia\/Kolkata:20270115T100000/
+  );
+  assert.match(
+    unfoldedCalendar,
+    /DTEND;TZID=Asia\/Kolkata:20270115T103000/
+  );
+  assert.match(
+    unfoldedCalendar,
+    /SUMMARY:.*Interviewer Calendar Own/
+  );
+  assert.match(
+    unfoldedCalendar,
+    /Candidate: Calendar Test Candidate Own/
+  );
+  assert.match(unfoldedCalendar, /END:VCALENDAR/);
+});
+
+test("Rejects calendar download for another interviewer's assignment", async () => {
+  const { response, body } = await request(
+    `/interviewer/interviews/${otherInterviewerScheduleId}/calendar`,
+    {},
+    interviewerCookie
+  );
+
+  assert.equal(response.status, 404);
+  assert.equal(body.success, false);
+});
+
+test("Rejects calendar download for an interview that is not booked", async () => {
+  await pool.query(
+    `UPDATE scheduled_interviews
+     SET status = 'published'
+     WHERE event_id = $1 AND schedule_id = $2`,
+    [publishedEventId, ownCalendarScheduleId]
+  );
+
+  try {
+    const { response, body } = await request(
+      `/interviewer/interviews/${ownCalendarScheduleId}/calendar`,
+      {},
+      interviewerCookie
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(body.success, false);
+  } finally {
+    await pool.query(
+      `UPDATE scheduled_interviews
+       SET status = 'booked'
+       WHERE event_id = $1 AND schedule_id = $2`,
+      [publishedEventId, ownCalendarScheduleId]
+    );
+  }
+});
+
+test("Rejects unauthenticated interviewer calendar downloads", async () => {
+  const { response } = await request(
+    `/interviewer/interviews/${ownCalendarScheduleId}/calendar`
+  );
+
+  assert.equal(response.status, 401);
+});
+
 async function cleanup() {
   if (interviewerCookie) {
     try {
@@ -414,31 +655,64 @@ async function cleanup() {
     } catch {}
   }
 
-  if (interviewerUserId || coordinatorUserId) {
+  // Delete test accounts first.
+  const userIdsToDelete = [
+    interviewerUserId,
+    coordinatorUserId,
+  ].filter(Boolean);
+
+  if (userIdsToDelete.length > 0) {
     await pool.query(
       `DELETE FROM user_accounts
        WHERE user_id = ANY($1::uuid[])`,
-      [[interviewerUserId, coordinatorUserId].filter(Boolean)]
+      [userIdsToDelete]
     );
   }
 
-  for (const eventId of [
+  const eventIdsToDelete = [
     draftEventId,
     publishedEventId,
     unassignedEventId,
-  ]) {
-    if (eventId) {
-      await pool.query(
-        "DELETE FROM recruitment_events WHERE event_id = $1",
-        [eventId]
-      );
-    }
+  ].filter(Boolean);
+
+  // Remove schedule-to-interviewer links before deleting event
+  // assignments. The database uses a RESTRICT foreign key here.
+  if (eventIdsToDelete.length > 0) {
+    await pool.query(
+      `DELETE FROM scheduled_interview_interviewers
+       WHERE event_id = ANY($1::uuid[])`,
+      [eventIdsToDelete]
+    );
   }
 
-  if (interviewerId) {
+  // Delete test events and their dependent data.
+  for (const eventId of eventIdsToDelete) {
     await pool.query(
-      "DELETE FROM interviewers WHERE interviewer_id = $1",
-      [interviewerId]
+      "DELETE FROM recruitment_events WHERE event_id = $1",
+      [eventId]
+    );
+  }
+
+  // Delete both interviewer profiles created by this test.
+  const interviewerIdsToDelete = [
+    interviewerId,
+    otherInterviewerId,
+  ].filter(Boolean);
+
+  if (interviewerIdsToDelete.length > 0) {
+    await pool.query(
+      `DELETE FROM interviewers
+       WHERE interviewer_id = ANY($1::uuid[])`,
+      [interviewerIdsToDelete]
+    );
+  }
+
+  // Delete candidate profiles created for the calendar tests.
+  if (calendarCandidateIds.length > 0) {
+    await pool.query(
+      `DELETE FROM candidates
+       WHERE candidate_id = ANY($1::uuid[])`,
+      [calendarCandidateIds]
     );
   }
 }

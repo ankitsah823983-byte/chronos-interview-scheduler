@@ -124,6 +124,7 @@ export default function CandidateDashboard() {
   const [interviews, setInterviews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [bookingId, setBookingId] = useState(null);
+  const [calendarDownloadId, setCalendarDownloadId] = useState(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [refreshCount, setRefreshCount] = useState(0);
@@ -161,7 +162,11 @@ export default function CandidateDashboard() {
   }, [loadInterviews, refreshCount]);
 
   async function handleBook(interview) {
-    if (bookingId !== null || interview.bookingStatus !== "published") {
+    if (
+      bookingId !== null ||
+      calendarDownloadId !== null ||
+      interview.bookingStatus !== "published"
+    ) {
       return;
     }
 
@@ -202,6 +207,71 @@ export default function CandidateDashboard() {
       setRefreshCount((count) => count + 1);
     } finally {
       setBookingId(null);
+    }
+  }
+
+  async function handleDownloadCalendar(interview) {
+    if (
+      bookingId !== null ||
+      calendarDownloadId !== null ||
+      interview.bookingStatus !== "booked"
+    ) {
+      return;
+    }
+
+    setCalendarDownloadId(interview.scheduleId);
+    setError("");
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/candidate/interviews/${interview.scheduleId}/calendar`,
+        {
+          method: "GET",
+          credentials: "include",
+        }
+      );
+
+      if (!response.ok) {
+        let body = {};
+
+        try {
+          body = await response.json();
+        } catch {
+          // Keep the fallback message if the server did not return JSON.
+        }
+
+        throw new Error(
+          body.error ||
+            `Could not download calendar invite (${response.status}).`
+        );
+      }
+
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      link.href = downloadUrl;
+      link.download = `chronos-interview-${interview.scheduleId}.ics`;
+      link.style.display = "none";
+
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      window.setTimeout(() => {
+        window.URL.revokeObjectURL(downloadUrl);
+      }, 1000);
+
+      setMessage(
+        "Calendar invite downloaded. Import the .ics file into Google Calendar."
+      );
+    } catch (requestError) {
+      setError(
+        requestError.message || "Could not download the calendar invite."
+      );
+    } finally {
+      setCalendarDownloadId(null);
     }
   }
 
@@ -246,7 +316,13 @@ export default function CandidateDashboard() {
                 padding: "18px",
               }}
             >
-              <p style={{ ...styles.muted, margin: "0 0 8px", fontSize: "13px" }}>
+              <p
+                style={{
+                  ...styles.muted,
+                  margin: "0 0 8px",
+                  fontSize: "13px",
+                }}
+              >
                 {item.label}
               </p>
 
@@ -272,10 +348,19 @@ export default function CandidateDashboard() {
             <button
               type="button"
               onClick={() => setRefreshCount((count) => count + 1)}
-              disabled={loading || bookingId !== null}
+              disabled={
+                loading ||
+                bookingId !== null ||
+                calendarDownloadId !== null
+              }
               style={{
                 ...styles.secondaryButton,
-                opacity: loading ? 0.6 : 1,
+                opacity:
+                  loading ||
+                  bookingId !== null ||
+                  calendarDownloadId !== null
+                    ? 0.6
+                    : 1,
               }}
             >
               Refresh
@@ -364,7 +449,13 @@ export default function CandidateDashboard() {
                   }}
                 >
                   <div>
-                    <p style={{ ...styles.muted, fontSize: "12px", margin: 0 }}>
+                    <p
+                      style={{
+                        ...styles.muted,
+                        fontSize: "12px",
+                        margin: 0,
+                      }}
+                    >
                       Interview time
                     </p>
 
@@ -374,15 +465,29 @@ export default function CandidateDashboard() {
                   </div>
 
                   <div>
-                    <p style={{ ...styles.muted, fontSize: "12px", margin: 0 }}>
+                    <p
+                      style={{
+                        ...styles.muted,
+                        fontSize: "12px",
+                        margin: 0,
+                      }}
+                    >
                       Interviewer
                     </p>
 
-                    <strong>{interview.interviewerNames || "To be announced"}</strong>
+                    <strong>
+                      {interview.interviewerNames || "To be announced"}
+                    </strong>
                   </div>
 
                   <div>
-                    <p style={{ ...styles.muted, fontSize: "12px", margin: 0 }}>
+                    <p
+                      style={{
+                        ...styles.muted,
+                        fontSize: "12px",
+                        margin: 0,
+                      }}
+                    >
                       Room
                     </p>
 
@@ -394,12 +499,20 @@ export default function CandidateDashboard() {
                   <button
                     type="button"
                     onClick={() => handleBook(interview)}
-                    disabled={bookingId !== null}
+                    disabled={
+                      bookingId !== null || calendarDownloadId !== null
+                    }
                     style={{
                       ...styles.button,
                       marginTop: "22px",
-                      opacity: bookingId !== null ? 0.7 : 1,
-                      cursor: bookingId !== null ? "wait" : "pointer",
+                      opacity:
+                        bookingId !== null || calendarDownloadId !== null
+                          ? 0.7
+                          : 1,
+                      cursor:
+                        bookingId !== null || calendarDownloadId !== null
+                          ? "wait"
+                          : "pointer",
                     }}
                   >
                     {bookingId === interview.scheduleId
@@ -409,14 +522,53 @@ export default function CandidateDashboard() {
                 )}
 
                 {interview.bookingStatus === "booked" && (
-                  <p style={{ ...styles.muted, marginBottom: 0, fontSize: "13px" }}>
-                    Your booking is confirmed. Keep these details for your interview.
-                  </p>
+                  <div style={{ marginTop: "16px" }}>
+                    <p
+                      style={{
+                        ...styles.muted,
+                        marginBottom: "12px",
+                        fontSize: "13px",
+                      }}
+                    >
+                      Your booking is confirmed. Keep these details for your
+                      interview.
+                    </p>
+
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadCalendar(interview)}
+                      disabled={
+                        calendarDownloadId !== null || bookingId !== null
+                      }
+                      style={{
+                        ...styles.secondaryButton,
+                        opacity:
+                          calendarDownloadId !== null || bookingId !== null
+                            ? 0.6
+                            : 1,
+                        cursor:
+                          calendarDownloadId !== null || bookingId !== null
+                            ? "wait"
+                            : "pointer",
+                      }}
+                    >
+                      {calendarDownloadId === interview.scheduleId
+                        ? "Preparing calendar invite..."
+                        : "Download calendar invite (.ics)"}
+                    </button>
+                  </div>
                 )}
 
                 {interview.bookingStatus === "cancelled" && (
-                  <p style={{ ...styles.muted, marginBottom: 0, fontSize: "13px" }}>
-                    This interview has been cancelled. Please contact your coordinator.
+                  <p
+                    style={{
+                      ...styles.muted,
+                      marginBottom: 0,
+                      fontSize: "13px",
+                    }}
+                  >
+                    This interview has been cancelled. Please contact your
+                    coordinator.
                   </p>
                 )}
               </article>
