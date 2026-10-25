@@ -9,13 +9,11 @@ const INITIAL_CANDIDATES = [
     id: "c1",
     name: "Candidate A",
     email: "",
-    availableSlotsText: "10:00, 10:30",
   },
   {
     id: "c2",
     name: "Candidate B",
     email: "",
-    availableSlotsText: "10:00, 10:30, 11:00, 11:30",
   },
 ];
 
@@ -82,6 +80,7 @@ function isValidOptionalEmail(value) {
   const email = typeof value === "string" ? value.trim() : "";
   return email.length === 0 || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
+
 function parseList(value) {
   return value
     .split(",")
@@ -119,13 +118,9 @@ function App() {
     INITIAL_TIME_SLOTS.join(", ")
   );
 
-  const [candidates, setCandidates] = useState(
-    INITIAL_CANDIDATES
-  );
+  const [candidates, setCandidates] = useState(INITIAL_CANDIDATES);
 
-  const [interviewers, setInterviewers] = useState(
-    INITIAL_INTERVIEWERS
-  );
+  const [interviewers, setInterviewers] = useState(INITIAL_INTERVIEWERS);
 
   const [rooms, setRooms] = useState(INITIAL_ROOMS);
   const [tasks, setTasks] = useState(INITIAL_TASKS);
@@ -135,6 +130,7 @@ function App() {
   const [savedEventId, setSavedEventId] = useState(
     () => localStorage.getItem("chronosLastSavedEventId") || ""
   );
+
   // An event only becomes active after it has been explicitly created or loaded.
   // This prevents a stale localStorage ID from accidentally overwriting a draft.
   const [activeEventId, setActiveEventId] = useState("");
@@ -229,7 +225,6 @@ function App() {
         id: `c-${Date.now()}`,
         name: `Candidate ${current.length + 1}`,
         email: "",
-        availableSlotsText: timeSlotsText,
       },
     ]);
   }
@@ -441,14 +436,15 @@ function App() {
     const saved = configuration || {};
 
     setTimeSlotsText((saved.timeSlots || []).join(", "));
+
     setCandidates(
       (saved.candidates || []).map((candidate) => ({
         id: candidate.id,
         name: candidate.name || "",
         email: candidate.email || "",
-        availableSlotsText: (candidate.availableSlots || []).join(", "),
       }))
     );
+
     setInterviewers(
       (saved.interviewers || []).map((interviewer) => ({
         id: interviewer.id,
@@ -459,6 +455,7 @@ function App() {
         maxInterviewsPerDay: String(interviewer.maxInterviewsPerDay ?? 2),
       }))
     );
+
     setRooms(
       (saved.rooms || []).map((room) => ({
         id: room.id,
@@ -466,6 +463,7 @@ function App() {
         availableSlotsText: (room.availableSlots || []).join(", "),
       }))
     );
+
     setTasks(
       (saved.tasks || []).map((task) => ({
         id: task.id,
@@ -542,15 +540,8 @@ function App() {
       return;
     }
 
-    if (
-      candidates.some(
-        (item) =>
-          !item.name.trim() || !item.availableSlotsText.trim()
-      )
-    ) {
-      setApiError(
-        "Every candidate needs a name and available time slots."
-      );
+    if (candidates.some((item) => !item.name.trim())) {
+      setApiError("Every candidate needs a name.");
       return;
     }
 
@@ -620,11 +611,16 @@ function App() {
       setApiError("Enter a valid email address for each interviewer who has an email.");
       return;
     }
+
     const candidateData = candidates.map((item) => ({
       id: item.id,
       name: item.name.trim(),
       email: (item.email || "").trim().toLowerCase(),
-      availableSlots: parseList(item.availableSlotsText),
+
+      // Candidate availability is not collected during draft setup.
+      // Every configured event time slot is eligible until booking constraints
+      // eliminate conflicts with other tasks and confirmed interviews.
+      availableSlots: [...timeSlots],
     }));
 
     const interviewerData = interviewers.map((item) => ({
@@ -723,7 +719,9 @@ function App() {
         setApiMessageTitle("Schedule generated and saved");
 
         setApiMessage(
-          `Successfully generated ${(data.schedule || []).length} interviews and saved the run to PostgreSQL.`
+          `Successfully generated ${
+            data.persistence?.savedInterviews ?? scheduleToDisplay.length
+          } interview option(s) and saved the run to PostgreSQL.`
         );
 
         return;
@@ -736,7 +734,9 @@ function App() {
           const previousResponse = await apiFetch(
             `http://localhost:5000/api/schedules/${encodeURIComponent(activeEventId)}`
           );
+
           const previousData = await previousResponse.json();
+
           if (previousResponse.ok && previousData.success) {
             setGeneratedSchedule(previousData.schedule || []);
             setEventStatus(previousData.event?.status || "draft");
@@ -810,19 +810,23 @@ function App() {
       }
 
       setEventStatus(data.event?.status || "published");
+
       setGeneratedSchedule((current) =>
         current.map((interview) => ({ ...interview, status: "published" }))
       );
+
       setApiMessageTitle(
         data.alreadyPublished ? "Schedule already published" : "Schedule published"
       );
+
       setApiMessage(
-        `Published ${data.publishedInterviews ?? generatedSchedule.length} interview(s) for ${data.event?.eventName || eventName}.`
+        `Published ${data.publishedInterviews ?? generatedSchedule.length} interview option(s) for ${data.event?.eventName || eventName}.`
       );
+
       void handleRefreshSavedEvents({ silent: true });
     } catch (error) {
       setApiError(
-        "Could not connect to Chronos. Check that the backend is running at localhost:5000."
+        "Could not connect to Chronos. Check that the server is running at localhost:5000."
       );
     } finally {
       setPublishingSchedule(false);
@@ -866,6 +870,7 @@ function App() {
       const loadedEventId = data.event?.eventId || eventId;
       const loadedEventName =
         data.event?.eventName || "Chronos Recruitment Event";
+
       const loadedEventDate = data.event?.eventDate
         ? String(data.event.eventDate).slice(0, 10)
         : "";
@@ -890,12 +895,13 @@ function App() {
       );
 
       setApiMessageTitle("Saved schedule loaded");
+
       setApiMessage(
-        `Loaded ${data.savedInterviews ?? loadedSchedule.length} saved interview(s) from PostgreSQL for ${loadedEventName}.`
+        `Loaded ${data.savedInterviews ?? loadedSchedule.length} saved interview option(s) from PostgreSQL for ${loadedEventName}.`
       );
     } catch (error) {
       setApiError(
-        "Could not connect to Chronos. Check that the backend is running at localhost:5000."
+        "Could not connect to Chronos. Check that the server is running at localhost:5000."
       );
     } finally {
       setLoadingSavedSchedule(false);
@@ -1021,16 +1027,17 @@ function App() {
           <div className="builder-intro">
             <p className="section-kicker">COORDINATOR WORKSPACE</p>
             <h2>Build your interview schedule.</h2>
+
             <p>
-              Enter availability, skills and room details. Chronos
-              will attempt to create a schedule that respects the
-              specified constraints.
+              Set interviewer availability, room availability, skills and
+              interview requirements. Chronos will generate feasible options
+              while preventing overlapping assignments.
             </p>
 
             <div className="demo-notice">
               Scheduling runs and generated draft schedules are saved to the
-              local PostgreSQL database. Accounts and multi-device access are
-              not implemented yet.
+              PostgreSQL database. Candidates can select from the published
+              interview options in their account workspace.
             </div>
           </div>
 
@@ -1102,6 +1109,7 @@ function App() {
                   ? "Start a new event"
                   : "Create draft event"}
             </button>
+
             <p className="field-help">
               {activeEventId
                 ? `Active event: ${eventName} (${eventStatus || "draft"}). Start a new event to leave this event and create another.`
@@ -1115,7 +1123,8 @@ function App() {
               <div>
                 <h3>Candidates</h3>
                 <p>
-                  Enter each candidate's name and available start-time blocks.
+                  Add candidate details. Candidates will choose from feasible
+                  published interview options later.
                 </p>
               </div>
             </div>
@@ -1124,6 +1133,7 @@ function App() {
               <div className="resource-item" key={candidate.id}>
                 <div className="resource-title">
                   <strong>Candidate {index + 1}</strong>
+
                   <button
                     type="button"
                     className="remove-button"
@@ -1136,6 +1146,7 @@ function App() {
                 <div className="field-grid">
                   <label className="form-field">
                     <span>Name</span>
+
                     <input
                       value={candidate.name}
                       onChange={(event) => {
@@ -1149,6 +1160,7 @@ function App() {
 
                   <label className="form-field">
                     <span>Candidate email (needed for invitation)</span>
+
                     <input
                       type="email"
                       autoComplete="off"
@@ -1160,19 +1172,6 @@ function App() {
                         clearFeedback();
                       }}
                       placeholder="candidate@example.com"
-                    />
-                  </label>
-                  <label className="form-field">
-                    <span>Available slots</span>
-                    <input
-                      value={candidate.availableSlotsText}
-                      onChange={(event) => {
-                        updateCandidate(candidate.id, {
-                          availableSlotsText: event.target.value,
-                        });
-                        clearFeedback();
-                      }}
-                      placeholder="10:00, 10:30"
                     />
                   </label>
                 </div>
@@ -1203,6 +1202,7 @@ function App() {
               <div className="resource-item" key={interviewer.id}>
                 <div className="resource-title">
                   <strong>Interviewer {index + 1}</strong>
+
                   <button
                     type="button"
                     className="remove-button"
@@ -1215,6 +1215,7 @@ function App() {
                 <div className="field-grid">
                   <label className="form-field">
                     <span>Name</span>
+
                     <input
                       value={interviewer.name}
                       onChange={(event) => {
@@ -1228,6 +1229,7 @@ function App() {
 
                   <label className="form-field">
                     <span>Interviewer email (needed for invitation)</span>
+
                     <input
                       type="email"
                       autoComplete="off"
@@ -1241,8 +1243,10 @@ function App() {
                       placeholder="interviewer@example.com"
                     />
                   </label>
+
                   <label className="form-field">
                     <span>Skills (comma-separated)</span>
+
                     <input
                       value={interviewer.skillsText}
                       onChange={(event) => {
@@ -1257,6 +1261,7 @@ function App() {
 
                   <label className="form-field">
                     <span>Available slots</span>
+
                     <input
                       value={interviewer.availableSlotsText}
                       onChange={(event) => {
@@ -1271,6 +1276,7 @@ function App() {
 
                   <label className="form-field">
                     <span>Maximum interviews per day</span>
+
                     <input
                       type="number"
                       min="1"
@@ -1311,6 +1317,7 @@ function App() {
               <div className="resource-item" key={room.id}>
                 <div className="resource-title">
                   <strong>Room {index + 1}</strong>
+
                   <button
                     type="button"
                     className="remove-button"
@@ -1323,6 +1330,7 @@ function App() {
                 <div className="field-grid">
                   <label className="form-field">
                     <span>Room name</span>
+
                     <input
                       value={room.name}
                       onChange={(event) => {
@@ -1336,6 +1344,7 @@ function App() {
 
                   <label className="form-field">
                     <span>Available slots</span>
+
                     <input
                       value={room.availableSlotsText}
                       onChange={(event) => {
@@ -1375,6 +1384,7 @@ function App() {
               <div className="resource-item" key={task.id}>
                 <div className="resource-title">
                   <strong>Interview task {index + 1}</strong>
+
                   <button
                     type="button"
                     className="remove-button"
@@ -1387,6 +1397,7 @@ function App() {
                 <div className="field-grid">
                   <label className="form-field">
                     <span>Candidate</span>
+
                     <select
                       value={task.candidateId}
                       onChange={(event) => {
@@ -1409,6 +1420,7 @@ function App() {
 
                   <label className="form-field">
                     <span>Round name</span>
+
                     <input
                       value={task.roundName}
                       onChange={(event) => {
@@ -1422,6 +1434,7 @@ function App() {
 
                   <label className="form-field">
                     <span>Required skills</span>
+
                     <input
                       value={task.requiredSkillsText}
                       onChange={(event) => {
@@ -1436,6 +1449,7 @@ function App() {
 
                   <label className="form-field">
                     <span>Duration (30-minute blocks)</span>
+
                     <select
                       value={task.durationSlots}
                       onChange={(event) => {
@@ -1469,7 +1483,12 @@ function App() {
               type="button"
               className="generate-button"
               onClick={handleGenerateSchedule}
-              disabled={loading || loadingSavedSchedule || creatingEvent || eventStatus === "published"}
+              disabled={
+                loading ||
+                loadingSavedSchedule ||
+                creatingEvent ||
+                eventStatus === "published"
+              }
             >
               {loading
                 ? "Generating schedule..."
@@ -1478,8 +1497,9 @@ function App() {
             </button>
 
             <p>
-              The scheduler attempts to satisfy candidate,
-              interviewer, skill, room and workload constraints.
+              The scheduler prevents candidate overlaps while respecting
+              interviewer availability, required skills, room availability
+              and workload limits.
             </p>
           </div>
 
@@ -1496,8 +1516,13 @@ function App() {
 
             <label className="form-field">
               <span>Select a saved event</span>
+
               <select
-                value={savedEvents.some((item) => item.eventId === savedEventId) ? savedEventId : ""}
+                value={
+                  savedEvents.some((item) => item.eventId === savedEventId)
+                    ? savedEventId
+                    : ""
+                }
                 onChange={(event) => {
                   setSavedEventId(event.target.value);
                   setActiveEventId("");
@@ -1513,9 +1538,11 @@ function App() {
                 disabled={loadingEvents}
               >
                 <option value="">Choose an event...</option>
+
                 {savedEvents.map((item) => (
                   <option key={item.eventId} value={item.eventId}>
-                    {item.eventName} — {item.eventDate} — {String(item.status).toUpperCase()} — {item.interviewCount} interview(s)
+                    {item.eventName} — {item.eventDate} —{" "}
+                    {String(item.status).toUpperCase()} — {item.interviewCount} option(s)
                   </option>
                 ))}
               </select>
@@ -1532,6 +1559,7 @@ function App() {
 
             <label className="form-field">
               <span>Saved event ID (or paste an ID manually)</span>
+
               <input
                 type="text"
                 value={savedEventId}
@@ -1619,8 +1647,9 @@ function App() {
                   <p className="section-kicker">SCHEDULER OUTPUT</p>
                   <h3>{scheduleViewTitle}</h3>
                 </div>
+
                 <span>
-                  {generatedSchedule.length} interviews
+                  {generatedSchedule.length} interview options
                   {eventStatus ? ` · ${eventStatus.toUpperCase()}` : ""}
                 </span>
               </div>
@@ -1645,7 +1674,10 @@ function App() {
                   return (
                     <article
                       className="result-card"
-                      key={item.taskId}
+                      key={
+                        item.interviewId ||
+                        `${item.taskId}-${item.startTime}-${item.endTime}-${item.interviewerName}-${item.roomName}`
+                      }
                     >
                       <span className="result-time">
                         {item.startTime} – {item.endTime}
@@ -1690,8 +1722,8 @@ function App() {
               <div className="feature-icon">⌘</div>
               <h3>Conflict-aware scheduling</h3>
               <p>
-                Account for candidate availability, interviewer
-                schedules and room availability when generating plans.
+                Prevent candidate overlaps while respecting interviewer
+                availability and room availability.
               </p>
             </article>
 
@@ -1728,7 +1760,8 @@ function App() {
               <span>01</span>
               <h3>Set the constraints</h3>
               <p>
-                Collect availability, skills, rooms and interview requirements.
+                Set interviewer and room availability, skills and interview
+                requirements.
               </p>
             </div>
 
