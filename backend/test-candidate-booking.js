@@ -637,6 +637,115 @@ test("Candidate B sees only their own booked interview", async () => {
   assert.equal(body.interviews[0].bookingStatus, "booked");
 });
 
+test("Booking one task option makes its sibling unavailable", async () => {
+  const optionEventId = await createEvent(
+    `Candidate Option Booking ${suffix}`,
+    "published"
+  );
+
+  await pool.query(
+    `INSERT INTO event_time_slots (event_id, slot_time)
+     VALUES ($1, '12:00'), ($1, '12:30')`,
+    [optionEventId]
+  );
+
+  // Create the first option. This also creates the task.
+  const firstOptionId = await createSchedule({
+    eventId: optionEventId,
+    candidateId: candidateAId,
+    interviewerId,
+    roundName: "Selectable Option Interview",
+    roomName: `Selectable Option Room ${suffix}`,
+    startTime: "12:00",
+    endTime: "12:30",
+    status: "published",
+  });
+
+  // Fetch the task and room created by createSchedule().
+  const firstOptionResult = await pool.query(
+    `SELECT task_id, room_id
+     FROM scheduled_interviews
+     WHERE event_id = $1 AND schedule_id = $2`,
+    [optionEventId, firstOptionId]
+  );
+
+  assert.equal(firstOptionResult.rows.length, 1);
+
+  const { task_id: taskId, room_id: roomId } =
+    firstOptionResult.rows[0];
+
+  // Create a second option for the SAME task.
+  const secondOptionResult = await pool.query(
+    `INSERT INTO scheduled_interviews
+       (event_id, task_id, room_id, start_time, end_time, status)
+     VALUES ($1, $2, $3, $4::time, $5::time, 'published')
+     RETURNING schedule_id`,
+    [
+      optionEventId,
+      taskId,
+      roomId,
+      "12:30",
+      "13:00",
+    ]
+  );
+
+  const secondOptionId = String(
+    secondOptionResult.rows[0].schedule_id
+  );
+
+  await pool.query(
+    `INSERT INTO scheduled_interview_interviewers
+       (event_id, schedule_id, interviewer_id)
+     VALUES ($1, $2, $3)`,
+    [optionEventId, secondOptionId, interviewerId]
+  );
+
+  // Book the first option.
+  const bookingResult = await request(
+    `/candidate/interviews/${firstOptionId}/book`,
+    { method: "POST" },
+    candidateACookie
+  );
+
+  assert.equal(
+    bookingResult.response.status,
+    200,
+    JSON.stringify(bookingResult.body)
+  );
+  assert.equal(bookingResult.body.success, true);
+  assert.equal(
+    bookingResult.body.interview.bookingStatus,
+    "booked"
+  );
+
+  // Verify that exactly one option is booked
+  // and its sibling has become unavailable.
+  const optionsResult = await pool.query(
+    `SELECT schedule_id::text AS schedule_id, status
+     FROM scheduled_interviews
+     WHERE event_id = $1 AND task_id = $2
+     ORDER BY start_time`,
+    [optionEventId, taskId]
+  );
+
+  assert.equal(optionsResult.rows.length, 2);
+
+  assert.deepEqual(
+    optionsResult.rows.map((option) => option.status),
+    ["booked", "unavailable"]
+  );
+
+  // Attempting to book the sibling must fail.
+  const siblingBookingResult = await request(
+    `/candidate/interviews/${secondOptionId}/book`,
+    { method: "POST" },
+    candidateACookie
+  );
+
+  assert.equal(siblingBookingResult.response.status, 409);
+  assert.equal(siblingBookingResult.body.success, false);
+});
+
 async function cleanup() {
   const cookies = [
     ["/auth/logout", candidateACookie],
