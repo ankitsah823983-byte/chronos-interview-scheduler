@@ -55,7 +55,7 @@ Install the following before running Chronos:
 ### 1. Clone the repository
 
 ```bash
-git clone <YOUR_GITHUB_REPOSITORY_URL>
+git clone <https://github.com/ankitsah823983-byte/chronos-interview-scheduler>
 cd chronos-interview-scheduler
 ```
 
@@ -78,7 +78,7 @@ Copy-Item .env.example .env
 cp .env.example .env
 ```
 
-Update `backend/.env` with your local PostgreSQL credentials and the required application configuration. Keep this file private; it must not be committed to Git.
+Update `backend/.env` with your local PostgreSQL credentials and the required application configuration. 
 
 ### 3. Set up PostgreSQL
 
@@ -180,5 +180,7 @@ Do not commit `.env` files, passwords, session secrets, SMTP credentials, encryp
 Chronos is a project developed for **Webster 2026 – CodeSangam**. This repository is intended to present the project, its implementation, and its development setup.
 
 ## Contributors
-
-Add the project team members and their GitHub profile links here.
+Team Members:
+Ankit Kumar Sah:https://github.com/ankitsah823983-byte
+Nitin Yadav:https://github.com/nitinyadav4433-a11y
+Ankur Raj:https://github.com/Ankur0788-raj
