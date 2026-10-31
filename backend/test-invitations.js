@@ -28,6 +28,7 @@ let interviewerInvitation = null;
 let passed = 0;
 let failed = 0;
 let cleanupStarted = false;
+let coordinatorReady = false;
 
 async function test(name, callback) {
   try {
@@ -104,49 +105,60 @@ async function assertStoredTokenHash(invitation) {
   assert.notEqual(result.rows[0].token_hash, invitation.token);
 }
 
+
 async function cleanup() {
   if (cleanupStarted) return;
   cleanupStarted = true;
 
-  const emails = [candidate.email, interviewer.email];
+  // The session helper may already have closed the shared pool
+  // if its setup failed. Only query the DB after setup succeeded.
+  if (coordinatorReady) {
+    const emails = [candidate.email, interviewer.email];
 
-  try {
-    await pool.query(
-      `DELETE FROM account_invitations
-       WHERE email = ANY($1::text[])`,
-      [emails]
-    );
-
-    await pool.query(
-      `DELETE FROM user_accounts
-       WHERE email = ANY($1::text[])`,
-      [emails]
-    );
-
-    if (candidate.id) {
+    try {
       await pool.query(
-        `DELETE FROM candidates WHERE candidate_id = $1`,
-        [candidate.id]
+        `DELETE FROM account_invitations
+         WHERE email = ANY($1::text[])`,
+        [emails]
       );
-    }
 
-    if (interviewer.id) {
       await pool.query(
-        `DELETE FROM interviewers WHERE interviewer_id = $1`,
-        [interviewer.id]
+        `DELETE FROM user_accounts
+         WHERE email = ANY($1::text[])`,
+        [emails]
       );
+
+      if (candidate.id) {
+        await pool.query(
+          `DELETE FROM candidates WHERE candidate_id = $1`,
+          [candidate.id]
+        );
+      }
+
+      if (interviewer.id) {
+        await pool.query(
+          `DELETE FROM interviewers WHERE interviewer_id = $1`,
+          [interviewer.id]
+        );
+      }
+    } catch (error) {
+      console.error(
+        "Invitation test cleanup failed:",
+        error.message
+      );
+      process.exitCode = 1;
     }
-  } catch (error) {
-    console.error("Invitation test cleanup failed:", error.message);
-    process.exitCode = 1;
   }
 
   await coordinatorSession.cleanup();
 }
 
+
 async function main() {
   try {
     await coordinatorSession.ready;
+    coordinatorReady = true;
+
     await createTestProfiles();
 
     console.log("Chronos account invitation tests\n");

@@ -1,4 +1,3 @@
-
 function generateSchedule({
   timeSlots,
   candidates,
@@ -7,6 +6,7 @@ function generateSchedule({
   tasks,
   maxSearchNodes = 50000,
   maxSolutions = 1,
+  maxOptionsPerTask = 2,
 }) {
   if (
     !Array.isArray(timeSlots) ||
@@ -24,6 +24,10 @@ function generateSchedule({
 
   if (!Number.isInteger(maxSolutions) || maxSolutions < 1) {
     throw new Error("Solution limit must be a positive integer.");
+  }
+
+  if (!Number.isInteger(maxOptionsPerTask) || maxOptionsPerTask < 1) {
+    throw new Error("Option limit must be a positive integer.");
   }
 
   const toMinutes = (time) => {
@@ -162,6 +166,24 @@ function generateSchedule({
   const interviewerWorkload = new Map();
   const assigned = new Map();
   const solutions = [];
+
+  const optionMode = maxSolutions > 1;
+
+  const optionsByTask = optionMode
+    ? new Map(
+        tasks.map((task) => [
+          task.id,
+          {
+            taskId: task.id,
+            options: [],
+            seenStartTimes: new Set(),
+          },
+        ])
+      )
+    : null;
+
+  let totalSolutionsFound = 0;
+  let optionCoverageComplete = false;
 
   const stats = {
     nodesVisited: 0,
@@ -611,22 +633,119 @@ function generateSchedule({
     });
   }
 
-  // Backtracking search using the Minimum Remaining Values heuristic.
-  // By default it stops after the first valid schedule. If maxSolutions is
-  // greater than one, it collects a bounded number of valid schedules while
-  // correctly releasing reserved resources after every explored branch.
-  function search() {
-    if (assigned.size === tasks.length) {
-      solutions.push(snapshotSchedule());
-      return tasks.length === 0 || solutions.length >= maxSolutions;
+  // In option mode, keep searching until every task has enough distinct
+  // start-time choices or the search budget / search space is exhausted.
+  function hasSufficientOptionCoverage() {
+    return (
+      optionMode &&
+      [...optionsByTask.values()].every(
+        (group) => group.options.length >= maxOptionsPerTask
+      )
+    );
+  }
+
+  function prioritizeTimingDiversity(task, options) {
+    if (!optionMode || options.length < 2) {
+      return options;
     }
 
+    const group = optionsByTask.get(task.id);
+    const byStartTime = new Map();
+
+    for (const option of options) {
+      if (!byStartTime.has(option.startTime)) {
+        byStartTime.set(option.startTime, []);
+      }
+
+      byStartTime.get(option.startTime).push(option);
+    }
+
+    // Interleave different start times instead of exhausting all
+    // room/interviewer variants for the earliest time first.
+    const timeGroups = [...byStartTime.entries()].sort(
+      ([timeA], [timeB]) => {
+        const seenA = group.seenStartTimes.has(timeA);
+        const seenB = group.seenStartTimes.has(timeB);
+
+        if (seenA !== seenB) {
+          return seenA ? 1 : -1;
+        }
+
+        return toMinutes(timeA) - toMinutes(timeB);
+      }
+    );
+
+    const ordered = [];
+
+    const maxVariants = Math.max(
+      ...timeGroups.map(([, variants]) => variants.length)
+    );
+
+    for (
+      let variantIndex = 0;
+      variantIndex < maxVariants;
+      variantIndex++
+    ) {
+      for (const [, variants] of timeGroups) {
+        if (variants[variantIndex]) {
+          ordered.push(variants[variantIndex]);
+        }
+      }
+    }
+
+    return ordered;
+  }
+
+  function recordCompleteSchedule() {
+    const foundSchedule = snapshotSchedule();
+    totalSolutionsFound++;
+
+    // Keep the number of stored full schedules bounded.
+    if (solutions.length < maxSolutions) {
+      solutions.push(foundSchedule);
+    }
+
+    if (!optionMode) {
+      return true;
+    }
+
+    // A candidate-facing option is unique by start time.
+    // Different rooms or interviewers at the same time do not count
+    // as additional timing choices.
+    for (const option of foundSchedule) {
+      const group = optionsByTask.get(option.taskId);
+
+      if (
+        !group ||
+        group.options.length >= maxOptionsPerTask ||
+        group.seenStartTimes.has(option.startTime)
+      ) {
+        continue;
+      }
+
+      group.seenStartTimes.add(option.startTime);
+      group.options.push({ ...option });
+    }
+
+    optionCoverageComplete = hasSufficientOptionCoverage();
+
+    return optionCoverageComplete;
+  }
+
+  // Backtracking search using the Minimum Remaining Values heuristic.
+  function search() {
+    // Count terminal schedules as visited nodes too.
     if (stats.nodesVisited >= maxSearchNodes) {
       stats.searchLimitReached = true;
       return false;
     }
 
     stats.nodesVisited++;
+
+    if (assigned.size === tasks.length) {
+      const shouldStop = recordCompleteSchedule();
+      return tasks.length === 0 || shouldStop;
+    }
 
     let chosenTask = null;
     let chosenOptions = null;
@@ -655,6 +774,11 @@ function generateSchedule({
         break;
       }
     }
+
+    chosenOptions = prioritizeTimingDiversity(
+      chosenTask,
+      chosenOptions
+    );
 
     for (const option of chosenOptions) {
       const { blocks } = option;
@@ -686,7 +810,7 @@ function generateSchedule({
 
       const shouldStop = search();
 
-      // Always undo this choice, even after recording a complete solution.
+      // Always undo this choice, including after recording a solution.
       assigned.delete(chosenTask.id);
 
       release(
@@ -721,6 +845,7 @@ function generateSchedule({
   }
 
   search();
+
   const success = solutions.length > 0;
 
   if (!success) {
@@ -763,45 +888,28 @@ function generateSchedule({
     stats,
   };
 
-  // Preserve the existing result shape for callers using the default mode.
-  // Multiple-option mode exposes unique choices per task sourced from
-  // complete valid schedules found by the search.
-  if (maxSolutions > 1) {
-    const optionsByTask = new Map(
-      tasks.map((task) => [
-        task.id,
-        { taskId: task.id, options: [], seen: new Set() },
-      ])
-    );
-
-    for (const foundSchedule of solutions) {
-      for (const option of foundSchedule) {
-        const group = optionsByTask.get(option.taskId);
-        const key = JSON.stringify([
-          option.startTime,
-          option.endTime,
-          option.interviewerId,
-          option.roomId,
-        ]);
-
-        if (!group.seen.has(key)) {
-          group.seen.add(key);
-          group.options.push({ ...option });
-        }
-      }
-    }
-
-    const solutionLimitReached = solutions.length >= maxSolutions;
-
+  // Candidate-facing alternatives use unique start times.
+  // Search can continue beyond maxSolutions stored snapshots to collect
+  // enough distinct feasible timings for every task.
+  if (optionMode) {
     result.taskOptions = tasks.map((task) => {
       const { taskId, options } = optionsByTask.get(task.id);
-      return { taskId, options };
+
+      return {
+        taskId,
+        options,
+      };
     });
 
     result.solutionsFound = solutions.length;
+    result.completeSchedulesExamined = totalSolutionsFound;
+    result.optionCoverageComplete = optionCoverageComplete;
 
+    // True only when the search space was exhausted.
     result.optionSearchComplete =
-      !stats.searchLimitReached && !solutionLimitReached;
+      !stats.searchLimitReached && !optionCoverageComplete;
+
+    result.maxOptionsPerTask = maxOptionsPerTask;
   }
 
   return result;

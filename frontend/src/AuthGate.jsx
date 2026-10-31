@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import InterviewerDashboard from "./InterviewerDashboard";
 import CandidateDashboard from "./CandidateDashboard";
 import InvitationRedeem from "./InvitationRedeem";
+import API_BASE_URL from "./config";
 
-const API_URL = "http://localhost:5000";
+const API_URL = API_BASE_URL;
 
 function isSupportedRole(role) {
   return ["coordinator", "interviewer", "candidate"].includes(role);

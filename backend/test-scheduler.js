@@ -608,7 +608,144 @@ test("Rejects an invalid search limit", () => {
   );
 });
 
+// 31. Multiple valid timing options should be discovered for every task.
+test("Discovers multiple feasible timing options across all four candidates", () => {
+  const input = makeInput();
 
+  input.timeSlots = [
+    "09:00",
+    "09:30",
+    "10:00",
+    "10:30",
+    "11:00",
+    "11:30",
+  ];
+
+  input.candidates = [
+    { id: "c1", name: "Candidate A", availableSlots: [...input.timeSlots] },
+    { id: "c2", name: "Candidate B", availableSlots: [...input.timeSlots] },
+    { id: "c3", name: "Candidate C", availableSlots: [...input.timeSlots] },
+    { id: "c4", name: "Candidate D", availableSlots: [...input.timeSlots] },
+  ];
+
+  input.interviewers = [
+    {
+      id: "i1",
+      name: "Interviewer A",
+      skills: ["DSA", "OS"],
+      availableSlots: ["09:00", "10:00", "11:00", "11:30"],
+      maxInterviewsPerDay: 2,
+    },
+    {
+      id: "i2",
+      name: "Interviewer B",
+      skills: ["DSA"],
+      availableSlots: ["09:30", "10:30", "11:30"],
+      maxInterviewsPerDay: 2,
+    },
+    {
+      id: "i3",
+      name: "Interviewer C",
+      skills: ["OS"],
+      availableSlots: ["09:00", "09:30", "10:30", "11:00"],
+      maxInterviewsPerDay: 2,
+    },
+  ];
+
+  input.rooms = [
+    {
+      id: "r1",
+      name: "Room A",
+      availableSlots: [...input.timeSlots],
+    },
+    {
+      id: "r2",
+      name: "Room B",
+      availableSlots: [...input.timeSlots],
+    },
+  ];
+
+  input.tasks = [
+    {
+      id: "t1",
+      candidateId: "c1",
+      roundName: "DSA Interview",
+      requiredSkills: ["DSA"],
+      durationSlots: 1,
+    },
+    {
+      id: "t2",
+      candidateId: "c2",
+      roundName: "OS Interview",
+      requiredSkills: ["OS"],
+      durationSlots: 1,
+    },
+    {
+      id: "t3",
+      candidateId: "c3",
+      roundName: "DSA Interview",
+      requiredSkills: ["DSA"],
+      durationSlots: 1,
+    },
+    {
+      id: "t4",
+      candidateId: "c4",
+      roundName: "OS Interview",
+      requiredSkills: ["OS"],
+      durationSlots: 1,
+    },
+  ];
+
+  const result = generateSchedule({
+    ...input,
+    maxSolutions: 20,
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.taskOptions.length, 4);
+
+  for (const task of input.tasks) {
+    const group = result.taskOptions.find(
+      (item) => item.taskId === task.id
+    );
+
+    assert.ok(group, `Missing options for task ${task.id}`);
+
+    const distinctTimes = new Set(
+      group.options.map((option) => option.startTime)
+    );
+
+    assert.ok(
+      distinctTimes.size >= 2,
+      `${task.roundName} for ${task.candidateId} has only ` +
+        `${distinctTimes.size} distinct start time(s): ` +
+        `${[...distinctTimes].join(", ")}`
+    );
+
+    for (const option of group.options) {
+      const interviewer = input.interviewers.find(
+        (item) => item.id === option.interviewerId
+      );
+
+      assert.ok(
+        interviewer,
+        `Unknown interviewer in option for task ${task.id}`
+      );
+
+      assert.ok(
+        task.requiredSkills.every((skill) =>
+          interviewer.skills.includes(skill)
+        ),
+        `Skill mismatch in option for task ${task.id}`
+      );
+
+      assert.ok(
+        interviewer.availableSlots.includes(option.startTime),
+        `Option uses an unavailable interviewer slot: ${option.startTime}`
+      );
+    }
+  }
+});
 console.log(`\nTest summary: ${passed} passed, ${failed} failed.`);
 
 if (failed > 0) {

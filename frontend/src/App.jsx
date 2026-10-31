@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 import CoordinatorInvitations from "./CoordinatorInvitations";
+import API_BASE_URL from "./config";
 
 const INITIAL_TIME_SLOTS = ["10:00", "10:30", "11:00", "11:30"];
 
@@ -100,7 +101,7 @@ async function apiFetch(url, options = {}) {
 }
 
 async function fetchSavedEvents() {
-  const response = await apiFetch("http://localhost:5000/api/events");
+  const response = await apiFetch(`${API_BASE_URL}/api/events`);
   const data = await response.json();
 
   if (!response.ok || !data.success || !Array.isArray(data.events)) {
@@ -393,7 +394,7 @@ function App() {
     setApiMessageTitle("");
 
     try {
-      const response = await apiFetch("http://localhost:5000/api/events", {
+      const response = await apiFetch(`${API_BASE_URL}/api/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -656,7 +657,7 @@ function App() {
 
     try {
       const response = await apiFetch(
-        "http://localhost:5000/api/schedule",
+        `${API_BASE_URL}/api/schedule`,
         {
           method: "POST",
           headers: {
@@ -693,7 +694,7 @@ function App() {
         if (eventId) {
           try {
             const savedResponse = await apiFetch(
-              `http://localhost:5000/api/schedules/${encodeURIComponent(eventId)}`
+              `${API_BASE_URL}/api/schedules/${encodeURIComponent(eventId)}`
             );
 
             const savedData = await savedResponse.json();
@@ -732,7 +733,7 @@ function App() {
       if (activeEventId && response.status === 422) {
         try {
           const previousResponse = await apiFetch(
-            `http://localhost:5000/api/schedules/${encodeURIComponent(activeEventId)}`
+            `${API_BASE_URL}/api/schedules/${encodeURIComponent(activeEventId)}`
           );
 
           const previousData = await previousResponse.json();
@@ -793,7 +794,7 @@ function App() {
 
     try {
       const response = await apiFetch(
-        `http://localhost:5000/api/events/${encodeURIComponent(eventId)}/publish`,
+        `${API_BASE_URL}/api/events/${encodeURIComponent(eventId)}/publish`,
         {
           method: "POST",
           headers: {
@@ -853,7 +854,7 @@ function App() {
 
     try {
       const response = await apiFetch(
-        `http://localhost:5000/api/schedules/${encodeURIComponent(eventId)}`
+        `${API_BASE_URL}/api/schedules/${encodeURIComponent(eventId)}`
       );
 
       const data = await response.json();

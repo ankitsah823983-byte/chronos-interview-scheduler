@@ -1,6 +1,7 @@
 
 const express = require("express");
 const pool = require("./db");
+const { sendEmail } = require("./email-service");
 
 const router = express.Router();
 
@@ -456,6 +457,125 @@ router.post("/interviews/:scheduleId/book", async (req, res) => {
 
     await client.query("COMMIT");
     transactionStarted = false;
+
+
+
+    // Send booking confirmations after the database commit.
+    // Each recipient is handled independently so one failure does not
+    // prevent the other recipient from receiving their email.
+    const eventDate =
+      event.eventDate instanceof Date
+        ? event.eventDate.toISOString().slice(0, 10)
+        : String(event.eventDate).slice(0, 10);
+
+    const sendBookingEmailSafely = async (label, email, message) => {
+      if (!email) {
+        console.warn(`${label} booking email skipped: no email address.`);
+        return;
+      }
+
+      try {
+        const result = await sendEmail({
+          to: email,
+          ...message,
+        });
+
+        if (result.skipped) {
+          console.log(`${label} booking email skipped: ${result.reason}`);
+        } else {
+          console.log(`${label} booking email accepted by SMTP: ${email}`);
+        }
+      } catch (error) {
+        console.error(`${label} booking email failed:`, error.message);
+      }
+    };
+
+    try {
+      const [candidateResult, interviewerResult, roomResult] =
+        await Promise.all([
+          pool.query(
+            `SELECT full_name AS "fullName", email
+             FROM candidates
+             WHERE candidate_id = $1`,
+            [candidateId]
+          ),
+          pool.query(
+            `SELECT DISTINCT i.full_name AS "fullName", i.email
+             FROM interviewers i
+             JOIN scheduled_interview_interviewers sii
+               ON sii.interviewer_id = i.interviewer_id
+             WHERE sii.event_id = $1
+               AND sii.schedule_id = $2`,
+            [interview.eventId, interview.scheduleId]
+          ),
+          pool.query(
+            `SELECT room_name AS "roomName"
+             FROM rooms
+             WHERE event_id = $1
+               AND room_id = $2`,
+            [interview.eventId, interview.roomId]
+          ),
+        ]);
+
+      const roomName = roomResult.rows[0]?.roomName || "Not specified";
+      const interviewerNames =
+        interviewerResult.rows.map((person) => person.fullName).join(", ") ||
+        "Not specified";
+
+      const details = [
+        `Event: ${event.eventName}`,
+        `Interview round: ${interview.roundName}`,
+        `Date: ${eventDate}`,
+        `Time: ${interview.startTime}-${interview.endTime}`,
+        `Room: ${roomName}`,
+        `Interviewer(s): ${interviewerNames}`,
+      ].join("\n");
+
+      const candidate = candidateResult.rows[0];
+
+      await sendBookingEmailSafely(
+        "Candidate",
+        candidate?.email,
+        {
+          subject: `Interview booking confirmed - ${event.eventName}`,
+          text: [
+            `Hello ${candidate?.fullName || "Candidate"},`,
+            "",
+            "Your interview booking is confirmed.",
+            "",
+            details,
+            "",
+            "Please keep this email for your reference.",
+            "",
+            "Chronos Interview Scheduler",
+          ].join("\n"),
+        }
+      );
+
+      await Promise.all(
+        interviewerResult.rows.map((interviewer) =>
+          sendBookingEmailSafely("Interviewer", interviewer.email, {
+            subject: `Interview scheduled - ${event.eventName}`,
+            text: [
+              `Hello ${interviewer.fullName},`,
+              "",
+              "You have been assigned to a confirmed interview.",
+              "",
+              details,
+              "",
+              "Chronos Interview Scheduler",
+            ].join("\n"),
+          })
+        )
+      );
+    } catch (emailError) {
+      console.error(
+        "Could not prepare booking confirmation emails:",
+        emailError.message
+      );
+    }
+
+
 
     return res.json({
       success: true,

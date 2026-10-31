@@ -147,3 +147,30 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Temporary backups and archives
+*.bak
+*.backup
+*.before-*
+*.zip
+*.backup.*
+*.before-*.js
+
+# Local database dumps and data backups
+*.dump
+*.sql.gz
+*.sqlite
+*.sqlite3
+
+# Local diagnostic and temporary scripts
+diagnose-login.js
+check-coordinator.js
+backend/check-coordinator.js
+backend/diagnose-login.js
+backend/reset-coordinator-password.js
+backend/reset-data.sql

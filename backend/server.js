@@ -8,6 +8,12 @@ const authRouter = require("./auth");
 const invitationsRouter = require("./invitations");
 const interviewerAvailabilityRouter = require("./interviewer-availability");
 const candidateBookingRouter = require("./candidate-booking");
+const notificationsRouter = require("./notifications");
+const { notifyEventParticipants } = require("./event-notifications");
+const {
+  startEmailDeliveryWorker,
+  stopEmailDeliveryWorker,
+} = require("./email-delivery");
 const { requireAuth, requireRole } = require("./auth-middleware");
 const { generateSchedule } = require("./scheduler");
 const {
@@ -16,7 +22,10 @@ const {
 } = require("./persistence");
 
 const app = express();
-const PORT = 5000;
+
+const PORT = Number(process.env.PORT || 5000);
+const FRONTEND_URL =
+  process.env.FRONTEND_URL || "http://localhost:5173";
 
 const sessionSecret = process.env.SESSION_SECRET;
 
@@ -33,7 +42,7 @@ if (process.env.NODE_ENV === "production") {
 
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: FRONTEND_URL,
     credentials: true,
   })
 );
@@ -76,6 +85,9 @@ app.use(
   requireRole("coordinator"),
   invitationsRouter
 );
+
+// Authenticated users: access only their own notifications.
+app.use("/api/notifications", requireAuth, notificationsRouter);
 
 // INTERVIEWER ONLY: manage availability for assigned events.
 app.use(
@@ -361,6 +373,29 @@ app.post(
         result,
       });
 
+      // Notify linked event participants after persistence; never fail the saved schedule for notification errors.
+      if (result.success && persistence.schedulePersisted && persistence.eventId) {
+        try {
+          const eventInfo = await pool.query(
+            `SELECT event_name AS "eventName",
+                    to_char(event_date, 'YYYY-MM-DD') AS "eventDate"
+             FROM recruitment_events
+             WHERE event_id = $1`,
+            [persistence.eventId]
+          );
+
+          if (eventInfo.rowCount > 0) {
+            await notifyEventParticipants(
+              persistence.eventId,
+              eventInfo.rows[0].eventName,
+              eventInfo.rows[0].eventDate,
+              req.user.userId
+            );
+          }
+        } catch (notificationError) {
+          console.error("Event participant notification failed:", notificationError.message);
+        }
+      }
       return res
         .status(result.success ? 200 : 422)
         .json({
@@ -809,6 +844,49 @@ app.post(
   }
 );
 
-app.listen(PORT, () => {
+
+const server = app.listen(PORT, () => {
   console.log(`Chronos API running at http://localhost:${PORT}`);
+
+  if (process.env.NODE_ENV === "test") {
+    console.log("Email delivery worker disabled in test environment.");
+  } else {
+    startEmailDeliveryWorker();
+  }
 });
+
+let shuttingDown = false;
+
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  console.log(`Received ${signal}; shutting down Chronos safely.`);
+
+  try {
+    await stopEmailDeliveryWorker();
+  } catch (error) {
+    console.error(
+      "Email delivery worker shutdown failed:",
+      error.message
+    );
+  }
+
+  server.close(async (error) => {
+    if (error) {
+      console.error("HTTP server shutdown failed:", error.message);
+    }
+
+    try {
+      await pool.end();
+    } catch (poolError) {
+      console.error(
+        "Database pool shutdown failed:",
+        poolError.message
+      );
+    }
+  });
+}
+
+process.once("SIGINT", () => void shutdown("SIGINT"));
+process.once("SIGTERM", () => void shutdown("SIGTERM"));

@@ -2,6 +2,8 @@
 const express = require("express");
 const { randomBytes, createHash } = require("node:crypto");
 const pool = require("./db");
+const { encryptInvitationToken } = require("./invitation-token-crypto");
+const { deliverInvitationEmail } = require("./invitation-email-delivery");
 
 const router = express.Router();
 
@@ -208,13 +210,30 @@ router.post("/", async (req, res) => {
       ]
     );
 
+
     await client.query("COMMIT");
+
+    // Attempt delivery after commit. A failure is persisted for safe recovery.
+    let emailStatus = "pending";
+    try {
+      const delivery = await deliverInvitationEmail(insertResult.rows[0].invitationId);
+      if (delivery.sent) emailStatus = "sent";
+      else if (delivery.skipped) emailStatus = "skipped";
+    } catch (emailError) {
+      console.error("Invitation email delivery failed:", emailError.message);
+      const statusResult = await pool.query(
+        `SELECT email_delivery_status AS status FROM account_invitations WHERE invitation_id = $1`,
+        [insertResult.rows[0].invitationId]
+      );
+      emailStatus = statusResult.rows[0]?.status || "failed";
+    }
 
     return res.status(201).json({
       success: true,
       invitation: insertResult.rows[0],
       token,
     });
+
   } catch (error) {
     if (client) {
       try {
