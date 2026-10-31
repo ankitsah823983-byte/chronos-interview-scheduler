@@ -182,5 +182,7 @@ Chronos is a project developed for **Webster 2026 – CodeSangam**. This reposit
 ## Contributors
 Team Members:
 Ankit Kumar Sah:https://github.com/ankitsah823983-byte
+
 Nitin Yadav:https://github.com/nitinyadav4433-a11y
+
 Ankur Raj:https://github.com/Ankur0788-raj
